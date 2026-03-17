@@ -9,7 +9,15 @@ import time
 import pytest
 
 from bsafe.ipc import FrameServer
-from bsafe.protocol import CMD_START, FRAME_META_FMT, MSG_FRAME, pack_message, read_message
+from bsafe.protocol import (
+    CMD_CENSOR,
+    CMD_START,
+    FRAME_META_FMT,
+    MSG_FRAME,
+    pack_message,
+    parse_censor_payload,
+    read_message,
+)
 
 
 def _make_frame_payload(display_id=1, width=640, height=480, timestamp_ns=100000, jpeg=b"\xff\xd8"):
@@ -84,6 +92,38 @@ def test_frame_server_drops_when_full(sock_path):
 
     assert received <= 2
     assert received < sent  # some were dropped
+
+    client.close()
+    server.shutdown()
+
+
+def test_frame_server_send_censor(sock_path):
+    server = FrameServer(sock_path, fps=3)
+    server.start()
+
+    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    client.connect(sock_path)
+
+    # Read CMD_START
+    read_message(client.recv)
+
+    # Send a frame so the server has a connected client
+    frame_payload = _make_frame_payload()
+    client.sendall(pack_message(MSG_FRAME, frame_payload))
+    server.frame_queue.get(timeout=2)
+
+    # Server sends censor command
+    boxes = [(10, 20, 100, 200), (300, 400, 50, 60)]
+    server.send_censor(1, 1920, 1080, boxes)
+
+    # Client reads the censor command
+    msg_type, payload = read_message(client.recv)
+    assert msg_type == CMD_CENSOR
+    display_id, fw, fh, parsed_boxes = parse_censor_payload(payload)
+    assert display_id == 1
+    assert fw == 1920
+    assert fh == 1080
+    assert parsed_boxes == boxes
 
     client.close()
     server.shutdown()

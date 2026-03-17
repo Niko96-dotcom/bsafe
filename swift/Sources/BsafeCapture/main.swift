@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 
 // MARK: - Argument parsing
@@ -39,6 +40,35 @@ func parseArgs() -> (socketPath: String, fps: Int) {
     return (socketPath, fps)
 }
 
+// MARK: - Censor payload parsing
+
+/// Parse CMD_CENSOR payload: [4B display_id][4B frame_width][4B frame_height][2B box_count][boxes...]
+/// Each box: [4B x (int32)][4B y (int32)][4B w (int32)][4B h (int32)]
+func parseCensorPayload(_ data: Data) -> (displayID: UInt32, frameWidth: UInt32, frameHeight: UInt32, boxes: [(x: Int32, y: Int32, w: Int32, h: Int32)])? {
+    let headerSize = 14  // 4 + 4 + 4 + 2
+    guard data.count >= headerSize else { return nil }
+
+    let displayID = data.withUnsafeBytes { $0.load(fromByteOffset: 0, as: UInt32.self).bigEndian }
+    let frameWidth = data.withUnsafeBytes { $0.load(fromByteOffset: 4, as: UInt32.self).bigEndian }
+    let frameHeight = data.withUnsafeBytes { $0.load(fromByteOffset: 8, as: UInt32.self).bigEndian }
+    let boxCount = data.withUnsafeBytes { $0.load(fromByteOffset: 12, as: UInt16.self).bigEndian }
+
+    let expectedSize = headerSize + Int(boxCount) * 16
+    guard data.count >= expectedSize else { return nil }
+
+    var boxes: [(x: Int32, y: Int32, w: Int32, h: Int32)] = []
+    for i in 0..<Int(boxCount) {
+        let offset = headerSize + i * 16
+        let x = data.withUnsafeBytes { $0.load(fromByteOffset: offset, as: Int32.self).bigEndian }
+        let y = data.withUnsafeBytes { $0.load(fromByteOffset: offset + 4, as: Int32.self).bigEndian }
+        let w = data.withUnsafeBytes { $0.load(fromByteOffset: offset + 8, as: Int32.self).bigEndian }
+        let h = data.withUnsafeBytes { $0.load(fromByteOffset: offset + 12, as: Int32.self).bigEndian }
+        boxes.append((x, y, w, h))
+    }
+
+    return (displayID, frameWidth, frameHeight, boxes)
+}
+
 // MARK: - Main
 
 let (socketPath, requestedFps) = parseArgs()
@@ -76,13 +106,38 @@ if let firstByte = payload.first {
     fps = requestedFps
 }
 
+// Initialize NSApplication for overlay windows (no dock icon)
+let app = NSApplication.shared
+app.setActivationPolicy(.accessory)
+
+// Create overlay — setup will be called once we know the display ID
+let overlay = CensorOverlay()
+
 let capture = ScreenCapture(fps: fps)
 
-// JPEG quality for detection — lower saves IPC bandwidth (no display needed)
-let jpegQuality = 0.4
+// JPEG quality matters for detection accuracy — 0.9 was validated empirically but
+// 0.7 may be a good bandwidth/accuracy tradeoff. Test and adjust if needed.
+let jpegQuality = 0.7
+
+// Track whether overlay has been set up for the display
+var overlayReady = false
+let overlaySetupLock = NSLock()
 
 // Set up frame callback: encode and send
 capture.onFrame = { cgImage, displayID, timestamp in
+    // Set up overlay on first frame (we now know the displayID).
+    // Uses sync to ensure overlay is ready before any updateBoxes call.
+    overlaySetupLock.lock()
+    if !overlayReady {
+        overlayReady = true
+        overlaySetupLock.unlock()
+        DispatchQueue.main.sync {
+            overlay.setup(displayID: displayID)
+        }
+    } else {
+        overlaySetupLock.unlock()
+    }
+
     guard let jpegData = FrameEncoder.encode(cgImage, quality: jpegQuality) else {
         fputs("Failed to encode frame\n", stderr)
         return
@@ -114,18 +169,27 @@ do {
     exit(1)
 }
 
-print("BsafeCapture: capturing at \(fps) FPS. Waiting for shutdown...")
+print("BsafeCapture: capturing at \(fps) FPS. Waiting for commands...")
 
-// Listen for CMD_SHUTDOWN in background
+// Listen for commands from Python in background
 DispatchQueue.global().async {
     while true {
         do {
-            let (msgType, _) = try client.readMessage()
-            if msgType == 0xFF {  // CMD_SHUTDOWN
+            let (msgType, payload) = try client.readMessage()
+            switch msgType {
+            case 0x20:  // CMD_CENSOR
+                guard let censor = parseCensorPayload(payload) else {
+                    fputs("BsafeCapture: failed to parse CMD_CENSOR payload\n", stderr)
+                    continue
+                }
+                overlay.updateBoxes(censor.boxes, frameWidth: censor.frameWidth, frameHeight: censor.frameHeight)
+            case 0xFF:  // CMD_SHUTDOWN
                 print("BsafeCapture: received shutdown command")
                 capture.stop()
                 client.disconnect()
                 exit(0)
+            default:
+                break
             }
         } catch {
             // Connection lost
@@ -136,5 +200,5 @@ DispatchQueue.global().async {
     }
 }
 
-// Keep the main run loop alive
-RunLoop.main.run()
+// Run the app event loop (needed for NSWindow overlay rendering)
+app.run()

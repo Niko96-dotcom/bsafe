@@ -9,6 +9,7 @@ import threading
 from bsafe.protocol import (
     CMD_SHUTDOWN,
     MSG_FRAME,
+    pack_cmd_censor,
     pack_cmd_start,
     pack_message,
     parse_frame_payload,
@@ -29,6 +30,7 @@ class FrameServer:
         self._client: socket.socket | None = None
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
+        self._write_lock = threading.Lock()
 
     def start(self):
         """Bind socket and start the reader thread."""
@@ -53,7 +55,7 @@ class FrameServer:
             logger.info("Swift helper connected")
 
             # Send CMD_START with desired FPS
-            self._client.sendall(pack_cmd_start(self.fps))
+            self._send_to_client(pack_cmd_start(self.fps))
 
             # Read frames
             recv_fn = self._client.recv
@@ -84,14 +86,29 @@ class FrameServer:
         finally:
             self._cleanup_client()
 
+    def _send_to_client(self, data: bytes):
+        """Thread-safe send to the connected client."""
+        with self._write_lock:
+            if self._client:
+                self._client.sendall(data)
+
+    def send_censor(
+        self,
+        display_id: int,
+        frame_width: int,
+        frame_height: int,
+        boxes: list[tuple[int, int, int, int]],
+    ):
+        """Send CMD_CENSOR with overlay box coordinates to Swift."""
+        self._send_to_client(pack_cmd_censor(display_id, frame_width, frame_height, boxes))
+
     def shutdown(self):
         """Send CMD_SHUTDOWN and stop the server."""
         self._stop_event.set()
-        if self._client:
-            try:
-                self._client.sendall(pack_message(CMD_SHUTDOWN))
-            except OSError:
-                pass
+        try:
+            self._send_to_client(pack_message(CMD_SHUTDOWN))
+        except OSError:
+            pass
         self._cleanup_client()
         self._cleanup_socket()
         if self._thread:

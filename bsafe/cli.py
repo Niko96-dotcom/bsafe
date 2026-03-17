@@ -19,6 +19,7 @@ def cmd_start(args):
             print("\nStopped.")
         return
 
+    from bsafe.censor import CENSOR_PRESETS, build_censor_boxes
     from bsafe.detector import Detector
     from bsafe.ipc import FrameServer
     from bsafe.swift_helper import spawn_helper
@@ -28,6 +29,9 @@ def cmd_start(args):
         print("Error: --fps must be between 1 and 255", file=sys.stderr)
         sys.exit(1)
     socket_path = os.path.join(tempfile.gettempdir(), f"bsafe-{os.getpid()}.sock")
+
+    censor_classes = CENSOR_PRESETS[args.censor]
+    padding = args.padding
 
     # Initialize detector
     print("Loading NudeNet model...", flush=True)
@@ -63,11 +67,14 @@ def cmd_start(args):
             logger.debug("Processed frame: %d detection(s)", len(detections))
             if detections:
                 for d in detections:
-                    print(
-                        f"[detection] {d.class_name} ({d.confidence:.2f}) "
-                        f"at {d.box} on display {meta.display_id}",
-                        flush=True,
+                    logger.debug(
+                        "[detection] %s (%.2f) at %s on display %d",
+                        d.class_name, d.confidence, d.box, meta.display_id,
                     )
+            boxes = build_censor_boxes(
+                detections, censor_classes, padding, meta.width, meta.height
+            )
+            server.send_censor(meta.display_id, meta.width, meta.height, boxes)
 
     except KeyboardInterrupt:
         print("\nShutting down...")
@@ -169,9 +176,20 @@ def main():
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     start_parser = subparsers.add_parser("start", help="Start the censoring process")
-    start_parser.add_argument("--fps", type=int, default=3, help="Capture FPS (default: 3)")
+    # 60 FPS tested as sustainable on MacBook Pro M4 Pro (capture + inference loop)
+    start_parser.add_argument("--fps", type=int, default=60, help="Capture FPS (default: 60)")
+    # Aggressive default: empirical tests showed confidence 0.0 catches edge cases
+    # that higher thresholds miss, with acceptable false-positive rate for censoring
     start_parser.add_argument(
-        "--confidence", type=float, default=0.5, help="Min detection confidence (default: 0.5)"
+        "--confidence", type=float, default=0.0, help="Min detection confidence (default: 0.0)"
+    )
+    start_parser.add_argument(
+        "--censor", choices=["female", "male", "all"], default="all",
+        help="What to censor: female, male, or all (default: all)",
+    )
+    start_parser.add_argument(
+        "--padding", type=float, default=0.0,
+        help="Box expansion fraction (default: 0.0)",
     )
     start_parser.add_argument(
         "--dry-run", action="store_true", help="Run without Swift helper or detector"

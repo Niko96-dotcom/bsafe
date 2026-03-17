@@ -9,6 +9,7 @@ MSG_FRAME = 0x01
 # Message types: Python → Swift
 CMD_START = 0x10
 CMD_STOP = 0x11
+CMD_CENSOR = 0x20
 CMD_SHUTDOWN = 0xFF
 
 # Header: 4 bytes length + 1 byte type
@@ -21,6 +22,13 @@ MAX_MESSAGE_SIZE = 50 * 1024 * 1024
 # Frame payload header: display_id(4) + width(4) + height(4) + timestamp_ns(8) = 20 bytes
 FRAME_META_SIZE = 20
 FRAME_META_FMT = "!IIIq"
+
+# Censor payload: display_id(4) + frame_width(4) + frame_height(4) + box_count(2) = 14 bytes header
+CENSOR_HEADER_FMT = "!IIIH"
+CENSOR_HEADER_SIZE = struct.calcsize(CENSOR_HEADER_FMT)
+# Per box: x(4) + y(4) + width(4) + height(4) = 16 bytes (signed for safety)
+CENSOR_BOX_FMT = "!iiii"
+CENSOR_BOX_SIZE = struct.calcsize(CENSOR_BOX_FMT)
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,6 +73,40 @@ def parse_frame_payload(payload: bytes) -> tuple[FrameMetadata, bytes]:
     )
     jpeg_data = payload[FRAME_META_SIZE:]
     return FrameMetadata(display_id, width, height, timestamp_ns), jpeg_data
+
+
+def pack_cmd_censor(
+    display_id: int,
+    frame_width: int,
+    frame_height: int,
+    boxes: list[tuple[int, int, int, int]],
+) -> bytes:
+    """Pack a CMD_CENSOR message with overlay box coordinates."""
+    parts = [struct.pack(CENSOR_HEADER_FMT, display_id, frame_width, frame_height, len(boxes))]
+    for x, y, w, h in boxes:
+        parts.append(struct.pack(CENSOR_BOX_FMT, x, y, w, h))
+    return pack_message(CMD_CENSOR, b"".join(parts))
+
+
+def parse_censor_payload(
+    payload: bytes,
+) -> tuple[int, int, int, list[tuple[int, int, int, int]]]:
+    """Parse a CMD_CENSOR payload. Returns (display_id, frame_width, frame_height, boxes)."""
+    if len(payload) < CENSOR_HEADER_SIZE:
+        raise ValueError(f"Censor payload too short: {len(payload)} < {CENSOR_HEADER_SIZE}")
+    display_id, frame_width, frame_height, box_count = struct.unpack(
+        CENSOR_HEADER_FMT, payload[:CENSOR_HEADER_SIZE]
+    )
+    expected = CENSOR_HEADER_SIZE + box_count * CENSOR_BOX_SIZE
+    if len(payload) < expected:
+        raise ValueError(f"Censor payload too short for {box_count} boxes: {len(payload)} < {expected}")
+    boxes = []
+    offset = CENSOR_HEADER_SIZE
+    for _ in range(box_count):
+        x, y, w, h = struct.unpack(CENSOR_BOX_FMT, payload[offset : offset + CENSOR_BOX_SIZE])
+        boxes.append((x, y, w, h))
+        offset += CENSOR_BOX_SIZE
+    return display_id, frame_width, frame_height, boxes
 
 
 def pack_cmd_start(fps: int) -> bytes:

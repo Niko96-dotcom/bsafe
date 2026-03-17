@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 class Detection:
     class_name: str
     confidence: float
-    box: tuple[int, int, int, int]  # x1, y1, x2, y2
+    box: tuple[int, int, int, int]  # x, y, w, h
 
 
 class Detector:

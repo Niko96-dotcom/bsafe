@@ -4,6 +4,11 @@ import io
 import struct
 
 from bsafe.protocol import (
+    CENSOR_BOX_FMT,
+    CENSOR_BOX_SIZE,
+    CENSOR_HEADER_FMT,
+    CENSOR_HEADER_SIZE,
+    CMD_CENSOR,
     CMD_SHUTDOWN,
     CMD_START,
     CMD_STOP,
@@ -13,8 +18,10 @@ from bsafe.protocol import (
     MAX_MESSAGE_SIZE,
     MSG_FRAME,
     FrameMetadata,
+    pack_cmd_censor,
     pack_cmd_start,
     pack_message,
+    parse_censor_payload,
     parse_frame_payload,
     read_message,
 )
@@ -112,3 +119,62 @@ def test_read_message_rejects_oversized():
     header = struct.pack(HEADER_FMT, huge_length, MSG_FRAME)
     with pytest.raises(ValueError, match="too large"):
         read_message(_make_recv(header))
+
+
+# --- CMD_CENSOR round-trip tests ---
+
+
+def test_censor_header_size():
+    assert struct.calcsize(CENSOR_HEADER_FMT) == CENSOR_HEADER_SIZE
+
+
+def test_censor_box_size():
+    assert struct.calcsize(CENSOR_BOX_FMT) == CENSOR_BOX_SIZE
+
+
+def test_censor_round_trip():
+    boxes = [(10, 20, 100, 200), (300, 400, 50, 60)]
+    raw = pack_cmd_censor(1, 1920, 1080, boxes)
+    msg_type, payload = read_message(_make_recv(raw))
+    assert msg_type == CMD_CENSOR
+    display_id, fw, fh, parsed_boxes = parse_censor_payload(payload)
+    assert display_id == 1
+    assert fw == 1920
+    assert fh == 1080
+    assert parsed_boxes == boxes
+
+
+def test_censor_zero_boxes():
+    raw = pack_cmd_censor(2, 3840, 2160, [])
+    msg_type, payload = read_message(_make_recv(raw))
+    assert msg_type == CMD_CENSOR
+    display_id, fw, fh, parsed_boxes = parse_censor_payload(payload)
+    assert display_id == 2
+    assert fw == 3840
+    assert fh == 2160
+    assert parsed_boxes == []
+
+
+def test_censor_many_boxes():
+    boxes = [(i * 10, i * 20, i * 5, i * 8) for i in range(100)]
+    raw = pack_cmd_censor(1, 7680, 4320, boxes)
+    msg_type, payload = read_message(_make_recv(raw))
+    assert msg_type == CMD_CENSOR
+    _, _, _, parsed_boxes = parse_censor_payload(payload)
+    assert parsed_boxes == boxes
+
+
+def test_censor_negative_coords():
+    """Signed int32 should preserve negative values."""
+    boxes = [(-10, -20, 100, 200)]
+    raw = pack_cmd_censor(1, 1920, 1080, boxes)
+    _, payload = read_message(_make_recv(raw))
+    _, _, _, parsed_boxes = parse_censor_payload(payload)
+    assert parsed_boxes == boxes
+
+
+def test_parse_censor_payload_too_short():
+    import pytest
+
+    with pytest.raises(ValueError, match="too short"):
+        parse_censor_payload(b"short")
