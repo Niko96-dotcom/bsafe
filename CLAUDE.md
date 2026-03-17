@@ -12,3 +12,11 @@
 - See `idea.md` (unversioned, gitignored) for the full product vision, architecture spec, and design constraints. Consult it when working on new phases.
 - Keep `README.md` updated when adding user-facing features, CLI options, or setup steps.
 - Keep `CLAUDE.md` updated when adding conventions, entry points, or architectural decisions.
+
+## Privacy
+
+Screen data is personal data. Strict rules:
+
+- **No network calls.** All processing (capture, inference, overlay) must happen locally. Never add HTTP clients, telemetry, analytics, or any outbound connections.
+- **No persistence of screen content.** Frames must stay in memory (or short-lived temp files required by libraries) and never be saved to disk intentionally. Temp files must be cleaned up.
+- **No logging of screen content.** Never log raw pixel data, file paths of saved frames, or detection image crops. Logging detection metadata (class, confidence, box coordinates) is acceptable.
