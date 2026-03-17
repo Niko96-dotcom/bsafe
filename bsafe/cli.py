@@ -79,6 +79,35 @@ def cmd_start(args):
         print("Stopped.")
 
 
+def cmd_bootstrap(args):
+    import subprocess
+
+    project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    swift_dir = os.path.join(project_dir, "swift")
+
+    # Step 1: uv sync
+    print("Installing Python dependencies...")
+    result = subprocess.run(["uv", "sync"], cwd=project_dir)
+    if result.returncode != 0:
+        print("Error: uv sync failed", file=sys.stderr)
+        sys.exit(1)
+    print("Python dependencies OK\n")
+
+    # Step 2: Build Swift helper
+    print("Building Swift helper...")
+    if not os.path.isdir(swift_dir):
+        print(f"Error: swift directory not found at {swift_dir}", file=sys.stderr)
+        sys.exit(1)
+    result = subprocess.run(["swift", "build", "-c", "release"], cwd=swift_dir)
+    if result.returncode != 0:
+        print("Error: Swift build failed", file=sys.stderr)
+        sys.exit(1)
+    print("Swift helper OK\n")
+
+    print("Bootstrap complete! Run 'bsafe doctor' to verify.")
+    _print_alias_hint()
+
+
 def cmd_doctor(args):
     all_ok = True
 
@@ -123,6 +152,16 @@ def cmd_doctor(args):
     if not all_ok:
         sys.exit(1)
 
+    # Suggest shell alias
+    _print_alias_hint()
+
+
+def _print_alias_hint():
+    project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    print()
+    print("Hint: to make bsafe globally available, add this to your ~/.zshrc:")
+    print(f"  alias bsafe='uv run --project {project_dir} bsafe'")
+
 
 def main():
     parser = argparse.ArgumentParser(prog="bsafe", description="Censor NSFW content on screen")
@@ -139,6 +178,7 @@ def main():
     start_parser.add_argument("-v", "--verbose", action="store_true", help="Verbose logging")
 
     subparsers.add_parser("doctor", help="Check system requirements")
+    subparsers.add_parser("bootstrap", help="Install dependencies and build Swift helper")
 
     args = parser.parse_args()
 
@@ -150,6 +190,7 @@ def main():
     commands = {
         "start": cmd_start,
         "doctor": cmd_doctor,
+        "bootstrap": cmd_bootstrap,
     }
 
     commands[args.command](args)

@@ -9,32 +9,15 @@ Censor NSFW content on your MacOS screen. CLI.
 Requires macOS 14+, Python 3.14, and [uv](https://docs.astral.sh/uv/):
 
 ```sh
-# install dependencies
-uv sync
-
-# activate the virtual environment
-source .venv/bin/activate
+uv run bsafe bootstrap
 ```
 
-### Swift helper
-
-The Swift helper handles screen capture via ScreenCaptureKit. Build it once:
-
-```sh
-cd swift && swift build -c release
-```
+This installs Python dependencies (`uv sync`) and builds the Swift
+screen-capture helper. At the end it prints an alias line you can add
+to your `~/.zshrc` to make `bsafe` globally available.
 
 You must grant **Screen Recording** permission to your terminal app
 (System Settings → Privacy & Security → Screen Recording).
-
-### Shell alias (optional)
-
-Copy the following to your `~/.zshrc` or equivalent if you wish to
-make a `bsafe` alias globally available in your terminal:
-
-```sh
-alias bsafe='uv run --project /path/to/bsafe bsafe'
-```
 
 ## Usage
 
