@@ -82,6 +82,7 @@ class ScreenCapture: NSObject, SCStreamDelegate, SCStreamOutput {
         of type: SCStreamOutputType
     ) {
         guard type == .screen else { return }
+
         guard let imageBuffer = sampleBuffer.imageBuffer else { return }
 
         let ciImage = CIImage(cvImageBuffer: imageBuffer)

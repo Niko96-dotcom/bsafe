@@ -60,12 +60,16 @@ class FrameServer:
             while not self._stop_event.is_set():
                 try:
                     msg_type, payload = read_message(recv_fn)
-                except ConnectionError:
+                except (ConnectionError, OSError):
                     logger.info("Swift helper disconnected")
                     break
 
                 if msg_type == MSG_FRAME:
                     meta, jpeg_data = parse_frame_payload(payload)
+                    logger.debug(
+                        "Frame received: display=%d %dx%d (%d bytes JPEG)",
+                        meta.display_id, meta.width, meta.height, len(jpeg_data),
+                    )
                     try:
                         self.frame_queue.put_nowait((meta, jpeg_data))
                     except queue.Full:

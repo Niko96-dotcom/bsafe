@@ -60,6 +60,7 @@ def cmd_start(args):
                 continue
 
             detections = detector.detect(jpeg_data)
+            logger.debug("Processed frame: %d detection(s)", len(detections))
             if detections:
                 for d in detections:
                     print(

@@ -52,8 +52,9 @@ def spawn_helper(socket_path: str, fps: int) -> subprocess.Popen:
             "Build it with: cd swift && swift build -c release"
         )
     logger.info("Spawning Swift helper: %s", helper)
+    verbose = logger.isEnabledFor(logging.DEBUG)
     return subprocess.Popen(
         [str(helper), "--socket", socket_path, "--fps", str(fps)],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stdout=None if verbose else subprocess.PIPE,
+        stderr=None if verbose else subprocess.PIPE,
     )

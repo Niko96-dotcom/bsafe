@@ -3,7 +3,11 @@ import Foundation
 class SocketClient {
     private let path: String
     private var fd: Int32 = -1
-    private let lock = NSLock()
+    // IMPORTANT: read and write use separate locks because the shutdown listener
+    // blocks on readMessage() waiting for commands from Python. A single shared
+    // lock would deadlock the frame callback's sendMessage() calls.
+    private let readLock = NSLock()
+    private let writeLock = NSLock()
 
     init(path: String) {
         self.path = path
@@ -57,8 +61,8 @@ class SocketClient {
     }
 
     func sendMessage(type: UInt8, payload: Data) throws {
-        lock.lock()
-        defer { lock.unlock() }
+        writeLock.lock()
+        defer { writeLock.unlock() }
 
         let length = UInt32(1 + payload.count).bigEndian
         var header = Data()
@@ -75,8 +79,8 @@ class SocketClient {
     private static let maxMessageSize = 50 * 1024 * 1024
 
     func readMessage() throws -> (type: UInt8, payload: Data) {
-        lock.lock()
-        defer { lock.unlock() }
+        readLock.lock()
+        defer { readLock.unlock() }
 
         let header = try recv(exactly: 5)
         let length = header.withUnsafeBytes { $0.load(as: UInt32.self).bigEndian }
@@ -96,8 +100,8 @@ class SocketClient {
     }
 
     func disconnect() {
-        lock.lock()
-        defer { lock.unlock() }
+        writeLock.lock()
+        defer { writeLock.unlock() }
 
         if fd >= 0 {
             close(fd)
