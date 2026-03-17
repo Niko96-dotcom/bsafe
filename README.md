@@ -20,7 +20,7 @@ Copy the following to your `~/.zshrc` or equivalent if you wish to
 make a `bsafe` alias globally available in your terminal:
 
 ```sh
-# TODO
+alias bsafe='uv run --project /path/to/bsafe bsafe'
 ```
 
 ## Usage
