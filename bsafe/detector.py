@@ -1,9 +1,11 @@
-"""NudeNet wrapper: takes JPEG bytes, returns detections."""
+"""NudeNet wrapper: takes frames or JPEG bytes, returns detections."""
 
 import logging
 import os
 import tempfile
 from dataclasses import dataclass
+
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +52,7 @@ class Detection:
 
 
 class Detector:
-    """Wraps NudeDetector for JPEG bytes → detections."""
+    """Wraps NudeDetector for frames or JPEG bytes → detections."""
 
     def __init__(self, min_confidence: float = 0.5, model: str | None = None):
         from nudenet import NudeDetector
@@ -58,7 +60,7 @@ class Detector:
         self.min_confidence = min_confidence
         model_path = resolve_model(model)
         self._detector = NudeDetector(model_path=model_path) if model_path else NudeDetector()
-        # Reusable temp file to avoid create/delete churn at capture FPS
+        # Reusable temp file for JPEG-bytes path (used by live capture)
         tmp = tempfile.NamedTemporaryFile(suffix=".jpg", prefix="bsafe-det-", delete=False)
         self._tmp_path = tmp.name
         tmp.close()
@@ -70,13 +72,7 @@ class Detector:
         except OSError:
             pass
 
-    def detect(self, jpeg_bytes: bytes) -> list[Detection]:
-        """Run inference on JPEG bytes. Returns filtered detections."""
-        # NudeNet requires a file path — reuse a single temp file
-        with open(self._tmp_path, "wb") as f:
-            f.write(jpeg_bytes)
-        results = self._detector.detect(self._tmp_path)
-
+    def _parse_results(self, results: list[dict]) -> list[Detection]:
         detections = []
         for r in results:
             confidence = r["score"]
@@ -91,3 +87,16 @@ class Detector:
                 )
             )
         return detections
+
+    def detect(self, jpeg_bytes: bytes) -> list[Detection]:
+        """Run inference on JPEG bytes. Returns filtered detections."""
+        # NudeNet requires a file path — reuse a single temp file
+        with open(self._tmp_path, "wb") as f:
+            f.write(jpeg_bytes)
+        results = self._detector.detect(self._tmp_path)
+        return self._parse_results(results)
+
+    def detect_frame(self, frame: np.ndarray) -> list[Detection]:
+        """Run inference on a BGR numpy frame directly (no JPEG roundtrip)."""
+        results = self._detector.detect(frame)
+        return self._parse_results(results)

@@ -5,7 +5,7 @@ import cv2
 import numpy as np
 import pytest
 
-from bsafe.video import SUPPORTED_EXTENSIONS, process_video
+from bsafe.video import SUPPORTED_EXTENSIONS, _CHUNK_FRAMES, process_video
 
 
 def _create_test_video(path, frames=5, width=64, height=64, fps=10.0):
@@ -34,6 +34,7 @@ def mock_detector():
     with patch("bsafe.video.Detector") as MockDetector:
         instance = MagicMock()
         instance.detect.return_value = []
+        instance.detect_frame.return_value = []
         MockDetector.return_value = instance
         yield instance
 
@@ -87,8 +88,8 @@ def test_fps_override(test_video, mock_detector):
     """With fps_override < native FPS, detection should run less often."""
     process_video(test_video, fps_override=2)
     # With 10 FPS native and 2 FPS detection, detect_every=5
-    # 5 frames total, so detector.detect should be called once (frame 0)
-    assert mock_detector.detect.call_count == 1
+    # 5 frames total, so detect_frame should be called once (frame 0)
+    assert mock_detector.detect_frame.call_count == 1
 
 
 def test_process_video_with_blur(test_video, mock_detector):
@@ -104,3 +105,29 @@ def test_process_video_with_pixels(test_video, mock_detector):
 def test_process_video_with_censor_text(test_video, mock_detector):
     output = process_video(test_video, censor_text="NSFW")
     assert os.path.exists(output)
+
+
+def test_chunks_cleaned_up_after_success(test_video, mock_detector):
+    """Chunk directory should be removed after successful processing."""
+    chunks_dir = test_video.replace(".mp4", ".bsafe.chunks")
+    process_video(test_video)
+    assert not os.path.exists(chunks_dir)
+
+
+def test_resume_from_partial(tmp_path, mock_detector):
+    """If chunks exist from a previous run, they should be reused."""
+    # Create a video with more frames than one chunk
+    path = str(tmp_path / "test.mp4")
+    total = _CHUNK_FRAMES + 10  # just over 1 chunk
+    _create_test_video(path, frames=total)
+
+    # Simulate a previous partial run: create a complete first chunk
+    chunks_dir = str(tmp_path / "test.bsafe.chunks")
+    os.makedirs(chunks_dir)
+    chunk_0 = os.path.join(chunks_dir, "chunk_0000.mp4")
+    _create_test_video(chunk_0, frames=_CHUNK_FRAMES)
+
+    output = process_video(path)
+    assert os.path.exists(output)
+    # Chunks should be cleaned up
+    assert not os.path.exists(chunks_dir)

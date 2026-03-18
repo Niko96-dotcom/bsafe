@@ -48,6 +48,11 @@ bsafe video clip.mp4 --fps 5          # run detection at 5 FPS (output keeps nat
 Supported formats: `.mp4`, `.m4v`, `.mov`. If `ffmpeg` is installed, audio is
 preserved in the output; otherwise the video is written without audio.
 
+Videos are processed in chunks (default: 5000 frames). If the process is killed
+(e.g. by the OS due to memory pressure), re-run the same command to resume —
+completed chunks are preserved on disk and skipped automatically. All chunks are
+combined into the final output at the end.
+
 ### Options
 
 Shared flags (work with both `start` and `video`):
@@ -76,6 +81,7 @@ Shared flags (work with both `start` and `video`):
 `video`-only flags:
 
 - `--fps N` — detection FPS override (default: native video FPS)
+- `--chunk-frames N` — frames per processing chunk (default: 5000). Smaller chunks use less memory but may cause brief tracking gaps at chunk boundaries.
 
 ### Using the 640m model
 

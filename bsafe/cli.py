@@ -1,4 +1,5 @@
 import argparse
+import faulthandler
 import logging
 import os
 import queue
@@ -239,10 +240,14 @@ def cmd_video(args):
             full_censor=args.full_censor,
             fps_override=args.fps,
             model=args.model,
+            chunk_frames=args.chunk_frames,
             verbose=args.verbose,
         )
-    except (FileNotFoundError, ValueError, RuntimeError) as e:
-        print(f"Error: {e}", file=sys.stderr)
+    except KeyboardInterrupt:
+        print("\nInterrupted.", file=sys.stderr)
+        sys.exit(130)
+    except Exception as e:
+        print(f"\nError: {e}", file=sys.stderr)
         sys.exit(1)
 
 
@@ -378,6 +383,13 @@ def main():
     video_parser.add_argument(
         "--fps", type=int, default=None, help="Detection FPS override (default: native)"
     )
+    video_parser.add_argument(
+        "--chunk-frames",
+        type=int,
+        default=None,
+        help="Frames per processing chunk (default: 5000). "
+        "Smaller chunks use less memory but add brief tracking gaps at boundaries.",
+    )
     _add_censor_args(video_parser)
 
     subparsers.add_parser("doctor", help="Check system requirements")
@@ -397,4 +409,5 @@ def main():
         "video": cmd_video,
     }
 
+    faulthandler.enable()
     commands[args.command](args)

@@ -1,9 +1,14 @@
 """Video processing pipeline: read a video file, run detection, write censored output."""
 
+import ctypes
+import ctypes.util
+import gc
 import logging
 import os
 import shutil
+import signal
 import subprocess
+import sys
 import time
 
 import cv2
@@ -21,6 +26,43 @@ from bsafe.tracking import BoxTracker
 logger = logging.getLogger(__name__)
 
 SUPPORTED_EXTENSIONS = {".mp4", ".m4v", ".mov"}
+_CHUNK_FRAMES = 5000  # frames per chunk — memory resets between chunks
+_MEMORY_HIGH_MB = 4096  # log a warning when RSS exceeds this
+
+
+def _get_rss_mb() -> float:
+    """Return current RSS in MB (not peak)."""
+    if sys.platform == "darwin":
+        try:
+            libc = ctypes.CDLL(ctypes.util.find_library("c"))
+
+            class _TaskVMInfo(ctypes.Structure):
+                _fields_ = [
+                    ("virtual_size", ctypes.c_uint64),
+                    ("resident_size", ctypes.c_uint64),
+                    ("resident_size_max", ctypes.c_uint64),
+                ]
+
+            TASK_VM_INFO = 22
+            vm_info = _TaskVMInfo()
+            count = ctypes.c_uint32(ctypes.sizeof(vm_info) // ctypes.sizeof(ctypes.c_int))
+            task = libc.mach_task_self()
+            kr = libc.task_info(task, TASK_VM_INFO, ctypes.byref(vm_info), ctypes.byref(count))
+            if kr == 0:
+                return vm_info.resident_size / (1024 * 1024)
+        except OSError:
+            pass
+    try:
+        with open("/proc/self/statm") as f:
+            pages = int(f.read().split()[1])
+        return pages * os.sysconf("SC_PAGE_SIZE") / (1024 * 1024)
+    except (FileNotFoundError, OSError):
+        pass
+    import resource
+
+    maxrss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    divisor = 1024 * 1024 if sys.platform == "darwin" else 1024
+    return maxrss / divisor
 
 
 def _fmt_duration(seconds: float) -> str:
@@ -35,97 +77,104 @@ def _fmt_duration(seconds: float) -> str:
     return f"{h}h{m:02d}m{s:02d}s"
 
 
-def process_video(
+def _chunk_path(chunks_dir: str, index: int) -> str:
+    return os.path.join(chunks_dir, f"chunk_{index:04d}.mp4")
+
+
+def _chunk_frame_count(path: str) -> int:
+    """Return frame count of a video file, or 0 if unreadable."""
+    cap = cv2.VideoCapture(path)
+    if not cap.isOpened():
+        return 0
+    n = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    cap.release()
+    return n
+
+
+def _find_completed_chunks(chunks_dir: str, expected_size: int, last_chunk_size: int,
+                           total_chunks: int) -> int:
+    """Return the number of fully completed chunks (contiguous from 0)."""
+    completed = 0
+    for i in range(total_chunks):
+        path = _chunk_path(chunks_dir, i)
+        if not os.path.isfile(path):
+            break
+        expected = last_chunk_size if i == total_chunks - 1 else expected_size
+        actual = _chunk_frame_count(path)
+        if actual < expected:
+            # Partial chunk — will be re-processed
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+            break
+        completed += 1
+    # Clean up any chunks after the break point
+    for i in range(completed, total_chunks + 1):
+        path = _chunk_path(chunks_dir, i)
+        if os.path.isfile(path):
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+    return completed
+
+
+def _process_chunk(
     input_path: str,
+    chunk_output: str,
+    start_frame: int,
+    num_frames: int,
     *,
-    confidence: float = 0.0,
-    censor_config: CensorConfig = CensorConfig(),
-    padding: float = 0.0,
-    persist_frames: int = 8,
-    smooth_alpha: float = 0.5,
-    blur: float = 0.0,
-    pixels: float = 0.0,
-    censor_text: str | None = None,
-    full_censor: bool = False,
-    fps_override: int | None = None,
-    model: str | None = None,
-    verbose: bool = False,
-) -> str:
-    """Process a video file and write a censored copy.
-
-    Returns the output file path.
-
-    Raises:
-        FileNotFoundError: If input_path does not exist.
-        ValueError: If the file format is unsupported or output already exists.
-        RuntimeError: If the video cannot be opened or the writer cannot be created.
-    """
-    # Validate input
-    if not os.path.isfile(input_path):
-        raise FileNotFoundError(f"file not found: {input_path}")
-
-    stem, ext = os.path.splitext(input_path)
-    if ext.lower() not in SUPPORTED_EXTENSIONS:
-        raise ValueError(
-            f"unsupported format '{ext}'. Supported: {', '.join(sorted(SUPPORTED_EXTENSIONS))}"
-        )
-
-    output_path = f"{stem}.bsafe{ext}"
-    if os.path.exists(output_path):
-        raise ValueError(f"output file already exists: {output_path}")
-
-    tmp_path = f"{stem}.bsafe.tmp{ext}"
-
-    # Open video
+    native_fps: float,
+    width: int,
+    height: int,
+    detect_every: int,
+    confidence: float,
+    censor_config: CensorConfig,
+    padding: float,
+    persist_frames: int,
+    smooth_alpha: float,
+    blur: float,
+    pixels: float,
+    censor_text: str | None,
+    full_censor: bool,
+    model: str | None,
+    total_frames: int,
+    t_start: float,
+) -> None:
+    """Process a single chunk of frames."""
     cap = cv2.VideoCapture(input_path)
     if not cap.isOpened():
         raise RuntimeError(f"cannot open video: {input_path}")
 
-    native_fps = cap.get(cv2.CAP_PROP_FPS)
-    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    # Seek to start frame
+    if start_frame > 0:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
 
-    print(f"Input: {input_path}")
-    print(f"  {width}x{height}, {native_fps:.1f} FPS, {total_frames} frames")
-
-    # Determine detection interval
-    detect_every = 1
-    if fps_override and fps_override < native_fps:
-        detect_every = max(1, round(native_fps / fps_override))
-        print(f"  Detection every {detect_every} frames ({fps_override} detection FPS)")
-
-    # Init detector and tracker
-    print("Loading NudeNet model...", flush=True)
     detector = Detector(min_confidence=confidence, model=model)
     censor_classes = censor_config.resolve_classes()
     tracker = BoxTracker(persist_frames=persist_frames, smooth_alpha=smooth_alpha)
 
-    # Writer: mp4v codec, native FPS
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    writer = cv2.VideoWriter(tmp_path, fourcc, native_fps, (width, height))
+    writer = cv2.VideoWriter(chunk_output, fourcc, native_fps, (width, height))
     if not writer.isOpened():
         cap.release()
         detector.close()
-        raise RuntimeError("cannot create output video writer")
+        raise RuntimeError(f"cannot create chunk writer: {chunk_output}")
 
-    # Process frames
-    frame_idx = 0
-    t_start = time.monotonic()
     last_progress = 0.0
-    processing_ok = False
+    memory_warned = False
 
     try:
-        while True:
+        for i in range(num_frames):
             ret, frame = cap.read()
             if not ret:
                 break
 
-            if frame_idx % detect_every == 0:
-                # Encode frame to JPEG for detector
-                _, jpeg = cv2.imencode(".jpg", frame)
-                jpeg_bytes = jpeg.tobytes()
-                detections = detector.detect(jpeg_bytes)
+            global_frame = start_frame + i
+            if global_frame % detect_every == 0:
+                detections = detector.detect_frame(frame)
                 detected_boxes = build_censor_boxes(
                     detections, censor_classes, padding, width, height
                 )
@@ -134,56 +183,126 @@ def process_video(
                         detected_boxes, FULL_CENSOR_MULTIPLIER, width, height
                     )
             else:
-                # No detection this frame — let tracker handle persistence/decay
                 detected_boxes = []
 
-            # Always update tracker so persistence/smoothing decay correctly
             boxes = tracker.update(0, detected_boxes)
-
             render_censors(frame, boxes, blur=blur, pixels=pixels, censor_text=censor_text)
             writer.write(frame)
-            frame_idx += 1
 
             # Progress every ~0.5s
             now = time.monotonic()
             if now - last_progress >= 0.5 and total_frames > 0:
                 elapsed = now - t_start
-                fps_actual = frame_idx / elapsed if elapsed > 0 else 0
-                pct = frame_idx / total_frames * 100
-                remaining = (total_frames - frame_idx) / fps_actual if fps_actual > 0 else 0
+                done = global_frame + 1
+                fps_actual = done / elapsed if elapsed > 0 else 0
+                pct = done / total_frames * 100
+                remaining = (total_frames - done) / fps_actual if fps_actual > 0 else 0
                 eta = _fmt_duration(remaining)
+                mem_mb = _get_rss_mb()
+
+                if not memory_warned and mem_mb > _MEMORY_HIGH_MB:
+                    memory_warned = True
+                    print(
+                        f"\n  Warning: high memory usage ({mem_mb:.0f} MB)",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+
                 print(
-                    f"\r  Frame {frame_idx}/{total_frames} ({pct:.0f}%) — "
-                    f"{fps_actual:.1f} FPS — ETA {eta}",
+                    f"\r  Frame {done}/{total_frames} ({pct:.0f}%) — "
+                    f"{fps_actual:.1f} FPS — ETA {eta} — {mem_mb:.0f} MB",
                     end="",
                     flush=True,
                 )
                 last_progress = now
-
-        processing_ok = True
-    except Exception as exc:
-        print(f"\n  Error at frame {frame_idx}: {exc}", flush=True)
-        raise
     finally:
-        print(flush=True)  # newline after \r progress
         cap.release()
         writer.release()
         detector.close()
-        # Clean up partial temp file on failure
-        if not processing_ok and os.path.exists(tmp_path):
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
 
-    elapsed = time.monotonic() - t_start
-    print(f"\n  Processed {frame_idx} frames in {_fmt_duration(elapsed)}")
 
-    # Mux audio with ffmpeg
-    _mux_audio(tmp_path, input_path, output_path)
+def _concat_chunks(chunks_dir: str, chunk_count: int, output_path: str,
+                   input_path: str) -> None:
+    """Concatenate chunk files and mux audio from the original."""
+    ffmpeg = shutil.which("ffmpeg")
 
-    print(f"Output: {output_path}")
-    return output_path
+    if chunk_count == 1:
+        single = _chunk_path(chunks_dir, 0)
+        if ffmpeg:
+            _mux_audio(single, input_path, output_path)
+        else:
+            os.rename(single, output_path)
+        return
+
+    if not ffmpeg:
+        logger.warning("ffmpeg not found — cannot concatenate chunks or preserve audio")
+        # Fall back: just use the first chunk (better than nothing)
+        os.rename(_chunk_path(chunks_dir, 0), output_path)
+        return
+
+    # Write ffmpeg concat list
+    list_path = os.path.join(chunks_dir, "concat.txt")
+    with open(list_path, "w") as f:
+        for i in range(chunk_count):
+            # ffmpeg concat requires escaped single quotes in paths
+            p = _chunk_path(chunks_dir, i).replace("'", "'\\''")
+            f.write(f"file '{p}'\n")
+
+    # Concat chunks + re-encode to H.264 + mux audio
+    tmp_concat = os.path.join(chunks_dir, "concat.mp4")
+    try:
+        result = subprocess.run(
+            [
+                ffmpeg,
+                "-f", "concat",
+                "-safe", "0",
+                "-i", list_path,
+                "-i", input_path,
+                "-c:v", "libx264",
+                "-preset", "fast",
+                "-crf", "18",
+                "-c:a", "aac",
+                "-map", "0:v:0",
+                "-map", "1:a:0?",
+                "-shortest",
+                "-y",
+                tmp_concat,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+        if result.returncode != 0:
+            logger.warning(
+                "ffmpeg concat failed (exit %d): %s", result.returncode, result.stderr
+            )
+            # Try without audio
+            result2 = subprocess.run(
+                [
+                    ffmpeg,
+                    "-f", "concat",
+                    "-safe", "0",
+                    "-i", list_path,
+                    "-c:v", "libx264",
+                    "-preset", "fast",
+                    "-crf", "18",
+                    "-y",
+                    tmp_concat,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=600,
+            )
+            if result2.returncode != 0:
+                logger.warning("ffmpeg concat (no audio) also failed: %s", result2.stderr)
+                os.rename(_chunk_path(chunks_dir, 0), output_path)
+                return
+            logger.warning("audio not preserved")
+
+        os.rename(tmp_concat, output_path)
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        logger.warning("ffmpeg error — falling back to first chunk only")
+        os.rename(_chunk_path(chunks_dir, 0), output_path)
 
 
 def _mux_audio(tmp_path: str, input_path: str, output_path: str) -> None:
@@ -201,22 +320,14 @@ def _mux_audio(tmp_path: str, input_path: str, output_path: str) -> None:
         result = subprocess.run(
             [
                 ffmpeg,
-                "-i",
-                tmp_path,
-                "-i",
-                input_path,
-                "-c:v",
-                "libx264",
-                "-preset",
-                "fast",
-                "-crf",
-                "18",
-                "-c:a",
-                "aac",
-                "-map",
-                "0:v:0",
-                "-map",
-                "1:a:0?",
+                "-i", tmp_path,
+                "-i", input_path,
+                "-c:v", "libx264",
+                "-preset", "fast",
+                "-crf", "18",
+                "-c:a", "aac",
+                "-map", "0:v:0",
+                "-map", "1:a:0?",
                 "-shortest",
                 "-y",
                 output_path,
@@ -233,14 +344,176 @@ def _mux_audio(tmp_path: str, input_path: str, output_path: str) -> None:
             )
             os.rename(tmp_path, output_path)
         else:
-            # Clean up temp file
             try:
                 os.unlink(tmp_path)
             except OSError:
                 pass
-    except (
-        subprocess.TimeoutExpired,
-        FileNotFoundError,
-    ):
+    except (subprocess.TimeoutExpired, FileNotFoundError):
         logger.warning("ffmpeg error — audio will not be preserved")
         os.rename(tmp_path, output_path)
+
+
+def process_video(
+    input_path: str,
+    *,
+    confidence: float = 0.0,
+    censor_config: CensorConfig = CensorConfig(),
+    padding: float = 0.0,
+    persist_frames: int = 8,
+    smooth_alpha: float = 0.5,
+    blur: float = 0.0,
+    pixels: float = 0.0,
+    censor_text: str | None = None,
+    full_censor: bool = False,
+    fps_override: int | None = None,
+    model: str | None = None,
+    chunk_frames: int | None = None,
+    verbose: bool = False,
+) -> str:
+    """Process a video file and write a censored copy.
+
+    The video is processed in chunks to limit memory usage. If the process is
+    interrupted (e.g. killed by the OS due to memory pressure), completed chunks
+    are preserved on disk and re-running the same command resumes from where it
+    left off. Once all chunks are done, they are combined into the final output.
+
+    Returns the output file path.
+
+    Raises:
+        FileNotFoundError: If input_path does not exist.
+        ValueError: If the file format is unsupported or output already exists.
+        RuntimeError: If the video cannot be opened or the writer cannot be created.
+    """
+    if not os.path.isfile(input_path):
+        raise FileNotFoundError(f"file not found: {input_path}")
+
+    stem, ext = os.path.splitext(input_path)
+    if ext.lower() not in SUPPORTED_EXTENSIONS:
+        raise ValueError(
+            f"unsupported format '{ext}'. Supported: {', '.join(sorted(SUPPORTED_EXTENSIONS))}"
+        )
+
+    output_path = f"{stem}.bsafe{ext}"
+    if os.path.exists(output_path):
+        raise ValueError(f"output file already exists: {output_path}")
+
+    # Probe video metadata
+    cap = cv2.VideoCapture(input_path)
+    if not cap.isOpened():
+        raise RuntimeError(f"cannot open video: {input_path}")
+
+    native_fps = cap.get(cv2.CAP_PROP_FPS)
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    cap.release()
+
+    print(f"Input: {input_path}")
+    print(f"  {width}x{height}, {native_fps:.1f} FPS, {total_frames} frames")
+
+    detect_every = 1
+    if fps_override and fps_override < native_fps:
+        detect_every = max(1, round(native_fps / fps_override))
+        print(f"  Detection every {detect_every} frames ({fps_override} detection FPS)")
+
+    # Chunk size
+    frames_per_chunk = chunk_frames if chunk_frames else _CHUNK_FRAMES
+
+    # Set up chunks directory
+    chunks_dir = f"{stem}.bsafe.chunks"
+    os.makedirs(chunks_dir, exist_ok=True)
+
+    # Calculate chunk boundaries
+    total_chunks = (total_frames + frames_per_chunk - 1) // frames_per_chunk
+    last_chunk_size = total_frames - (frames_per_chunk * (total_chunks - 1))
+
+    print(f"  Processing in {total_chunks} chunks of {frames_per_chunk} frames")
+    print(
+        f"  Chunks are saved to: {chunks_dir}\n"
+        f"  If the process is killed (e.g. by the OS due to high memory usage),\n"
+        f"  re-run the same command to resume. Completed chunks will be skipped.\n"
+        f"  All chunks are combined into the final output at the end."
+    )
+
+    # Check for completed chunks from a previous run
+    completed = _find_completed_chunks(
+        chunks_dir, frames_per_chunk, last_chunk_size, total_chunks
+    )
+    if completed > 0:
+        skipped_frames = completed * frames_per_chunk
+        print(f"  Resuming: {completed}/{total_chunks} chunks already done "
+              f"({skipped_frames} frames)")
+
+    # SIGTERM handler
+    def _sigterm_handler(signum, _frame):
+        print(
+            f"\n  Killed by signal {signum} (possible out-of-memory).\n"
+            f"  Completed chunks are saved in: {chunks_dir}\n"
+            f"  Re-run the same command to resume.\n"
+            f"  To reduce memory, try a smaller --chunk-frames value.",
+            file=sys.stderr,
+            flush=True,
+        )
+        sys.exit(137)
+
+    prev_sigterm = signal.signal(signal.SIGTERM, _sigterm_handler)
+    t_start = time.monotonic()
+
+    try:
+        for chunk_idx in range(completed, total_chunks):
+            start_frame = chunk_idx * frames_per_chunk
+            expected = last_chunk_size if chunk_idx == total_chunks - 1 else frames_per_chunk
+            chunk_file = _chunk_path(chunks_dir, chunk_idx)
+
+            print(f"\n  Chunk {chunk_idx + 1}/{total_chunks} — loading model...",
+                  flush=True)
+
+            _process_chunk(
+                input_path,
+                chunk_file,
+                start_frame,
+                expected,
+                native_fps=native_fps,
+                width=width,
+                height=height,
+                detect_every=detect_every,
+                confidence=confidence,
+                censor_config=censor_config,
+                padding=padding,
+                persist_frames=persist_frames,
+                smooth_alpha=smooth_alpha,
+                blur=blur,
+                pixels=pixels,
+                censor_text=censor_text,
+                full_censor=full_censor,
+                model=model,
+                total_frames=total_frames,
+                t_start=t_start,
+            )
+
+            # Force memory cleanup between chunks
+            gc.collect()
+
+    except Exception as exc:
+        print(
+            f"\n  Error: {exc}\n"
+            f"  Completed chunks saved in: {chunks_dir}\n"
+            f"  Re-run the same command to resume.",
+            flush=True,
+        )
+        raise
+    finally:
+        signal.signal(signal.SIGTERM, prev_sigterm)
+
+    elapsed = time.monotonic() - t_start
+    print(f"\n  Processed in {_fmt_duration(elapsed)}")
+
+    # Concatenate chunks + mux audio
+    print("  Assembling final video (combining all chunks)...", flush=True)
+    _concat_chunks(chunks_dir, total_chunks, output_path, input_path)
+
+    # Clean up chunks directory
+    shutil.rmtree(chunks_dir, ignore_errors=True)
+
+    print(f"Output: {output_path}")
+    return output_path
