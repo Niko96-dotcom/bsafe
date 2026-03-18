@@ -167,6 +167,29 @@ def cmd_doctor(args):
         print("NOT FOUND — build with: cd swift && swift build -c release")
         all_ok = False
 
+    # Screen Recording permission
+    print("Screen Recording: ", end="")
+    if helper:
+        import subprocess
+
+        result = subprocess.run(
+            [str(helper), "--check-permission"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode == 0 and "SCREEN_RECORDING_OK" in result.stdout:
+            print("OK")
+        else:
+            print(
+                "NOT GRANTED — open System Settings > Privacy & Security > Screen Recording "
+                "and enable your terminal app"
+            )
+            all_ok = False
+    else:
+        print("SKIPPED (Swift helper not found)")
+        all_ok = False
+
     if not all_ok:
         sys.exit(1)
 

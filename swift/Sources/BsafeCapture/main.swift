@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import ScreenCaptureKit
 
 // MARK: - Argument parsing
 
@@ -67,6 +68,24 @@ func parseCensorPayload(_ data: Data) -> (displayID: UInt32, frameWidth: UInt32,
     }
 
     return (displayID, frameWidth, frameHeight, boxes)
+}
+
+// MARK: - Permission check (early exit)
+
+if CommandLine.arguments.contains("--check-permission") {
+    let semaphore = DispatchSemaphore(value: 0)
+    var ok = false
+
+    SCShareableContent.getExcludingDesktopWindows(false, onScreenWindowsOnly: true) { content, error in
+        if error == nil, let content, !content.displays.isEmpty {
+            ok = true
+        }
+        semaphore.signal()
+    }
+
+    semaphore.wait()
+    print(ok ? "SCREEN_RECORDING_OK" : "SCREEN_RECORDING_DENIED")
+    exit(ok ? 0 : 1)
 }
 
 // MARK: - Main
