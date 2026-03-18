@@ -2,6 +2,7 @@ import argparse
 import logging
 import os
 import queue
+import signal
 import sys
 import tempfile
 import time
@@ -11,12 +12,17 @@ logger = logging.getLogger(__name__)
 
 def cmd_start(args):
     if args.dry_run:
+        stop = False
+
+        def _handle_sigint(sig, frame):
+            nonlocal stop
+            stop = True
+
+        signal.signal(signal.SIGINT, _handle_sigint)
         print("Running... press Ctrl+C to stop.", flush=True)
-        try:
-            while True:
-                time.sleep(1)
-        except KeyboardInterrupt:
-            print("\nStopped.")
+        while not stop:
+            time.sleep(0.2)
+        print("\nStopped.")
         return
 
     from bsafe.censor import CENSOR_PRESETS, build_censor_boxes
