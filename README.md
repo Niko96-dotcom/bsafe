@@ -55,7 +55,7 @@ combined into the final output at the end.
 
 ### Configuration file
 
-`bsafe bootstrap` creates `~/.bsafe/config.toml` with all default values.
+`bsafe bootstrap` creates `~/.config/bsafe/config.toml` with all default values.
 Edit this file to set your preferred defaults — CLI flags always override it.
 
 Sections: `[start]` for start-only flags, `[video]` for video-only flags,
@@ -96,8 +96,8 @@ Shared flags (work with both `start` and `video`):
 The default `320n` model is fast but less accurate. For better detection, download the `640m` model:
 
 ```sh
-mkdir -p ~/.bsafe/models
-curl -Lo ~/.bsafe/models/640m.onnx \
+mkdir -p ~/.config/bsafe/models
+curl -Lo ~/.config/bsafe/models/640m.onnx \
   https://github.com/notAI-tech/NudeNet/releases/download/v3.4-weights/640m.onnx
 ```
 

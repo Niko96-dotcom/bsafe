@@ -296,13 +296,14 @@ def cmd_bootstrap(args):
     print("Swift helper OK\n")
 
     # Step 3: Ensure models directory exists
-    models_dir = os.path.expanduser("~/.bsafe/models")
+    models_dir = os.path.expanduser("~/.config/bsafe/models")
     os.makedirs(models_dir, exist_ok=True)
     print(f"Models directory: {models_dir} OK\n")
 
     # Step 4: Create config file if it doesn't exist
     config_path = CONFIG_PATH
     if not os.path.exists(config_path):
+        os.makedirs(os.path.dirname(config_path), exist_ok=True)
         with open(config_path, "w") as f:
             f.write(generate_default_config())
         print(f"Config file: {config_path} CREATED\n")

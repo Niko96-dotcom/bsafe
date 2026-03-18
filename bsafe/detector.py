@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 KNOWN_MODELS: dict[str, str | None] = {
     "320n": None,  # bundled with nudenet
-    "640m": "~/.bsafe/models/640m.onnx",
+    "640m": "~/.config/bsafe/models/640m.onnx",
 }
 
 _640M_DOWNLOAD_URL = (
@@ -38,7 +38,7 @@ def resolve_model(name: str | None) -> str | None:
         raise ValueError(
             f"model file not found: {path}\n"
             f"Download it with:\n"
-            f"  mkdir -p ~/.bsafe/models && curl -Lo {path} {_640M_DOWNLOAD_URL}"
+            f"  mkdir -p ~/.config/bsafe/models && curl -Lo {path} {_640M_DOWNLOAD_URL}"
         )
 
     return path

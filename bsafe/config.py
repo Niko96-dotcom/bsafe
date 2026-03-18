@@ -1,7 +1,7 @@
 import os
 import tomllib
 
-CONFIG_PATH = os.path.expanduser("~/.bsafe/config.toml")
+CONFIG_PATH = os.path.expanduser("~/.config/bsafe/config.toml")
 
 VALID_KEYS = {
     "start": {"fps", "dry_run"},

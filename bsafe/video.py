@@ -58,7 +58,7 @@ def _get_rss_mb() -> float:
         with open("/proc/self/statm") as f:
             pages = int(f.read().split()[1])
         return pages * os.sysconf("SC_PAGE_SIZE") / (1024 * 1024)
-    except (FileNotFoundError, OSError):
+    except FileNotFoundError, OSError:
         pass
     import resource
 
@@ -329,7 +329,7 @@ def _concat_chunks(chunks_dir: str, chunk_count: int, output_path: str, input_pa
             logger.warning("audio not preserved")
 
         os.rename(tmp_concat, output_path)
-    except (subprocess.TimeoutExpired, FileNotFoundError):
+    except subprocess.TimeoutExpired, FileNotFoundError:
         logger.warning("ffmpeg error — falling back to first chunk only")
         os.rename(_chunk_path(chunks_dir, 0), output_path)
 
@@ -385,7 +385,7 @@ def _mux_audio(tmp_path: str, input_path: str, output_path: str) -> None:
                 os.unlink(tmp_path)
             except OSError:
                 pass
-    except (subprocess.TimeoutExpired, FileNotFoundError):
+    except subprocess.TimeoutExpired, FileNotFoundError:
         logger.warning("ffmpeg error — audio will not be preserved")
         os.rename(tmp_path, output_path)
 
