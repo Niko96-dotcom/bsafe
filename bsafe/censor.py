@@ -5,21 +5,27 @@ from bsafe.detector import Detection
 # BUTTOCKS_EXPOSED is intentionally excluded — too many false positives in practice
 # (e.g. tight clothing, seated posture) and low user-reported value for censoring.
 CENSOR_PRESETS: dict[str, frozenset[str]] = {
-    "female": frozenset({
-        "FEMALE_GENITALIA_EXPOSED",
-        "FEMALE_BREAST_EXPOSED",
-        "ANUS_EXPOSED",
-    }),
-    "male": frozenset({
-        "MALE_GENITALIA_EXPOSED",
-        "ANUS_EXPOSED",
-    }),
-    "all": frozenset({
-        "FEMALE_GENITALIA_EXPOSED",
-        "FEMALE_BREAST_EXPOSED",
-        "MALE_GENITALIA_EXPOSED",
-        "ANUS_EXPOSED",
-    }),
+    "female": frozenset(
+        {
+            "FEMALE_GENITALIA_EXPOSED",
+            "FEMALE_BREAST_EXPOSED",
+            "ANUS_EXPOSED",
+        }
+    ),
+    "male": frozenset(
+        {
+            "MALE_GENITALIA_EXPOSED",
+            "ANUS_EXPOSED",
+        }
+    ),
+    "all": frozenset(
+        {
+            "FEMALE_GENITALIA_EXPOSED",
+            "FEMALE_BREAST_EXPOSED",
+            "MALE_GENITALIA_EXPOSED",
+            "ANUS_EXPOSED",
+        }
+    ),
 }
 
 DEFAULT_CENSOR_CLASSES = CENSOR_PRESETS["all"]

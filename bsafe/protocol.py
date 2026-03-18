@@ -99,7 +99,9 @@ def parse_censor_payload(
     )
     expected = CENSOR_HEADER_SIZE + box_count * CENSOR_BOX_SIZE
     if len(payload) < expected:
-        raise ValueError(f"Censor payload too short for {box_count} boxes: {len(payload)} < {expected}")
+        raise ValueError(
+            f"Censor payload too short for {box_count} boxes: {len(payload)} < {expected}"
+        )
     boxes = []
     offset = CENSOR_HEADER_SIZE
     for _ in range(box_count):

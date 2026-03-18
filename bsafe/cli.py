@@ -69,11 +69,12 @@ def cmd_start(args):
                 for d in detections:
                     logger.debug(
                         "[detection] %s (%.2f) at %s on display %d",
-                        d.class_name, d.confidence, d.box, meta.display_id,
+                        d.class_name,
+                        d.confidence,
+                        d.box,
+                        meta.display_id,
                     )
-            boxes = build_censor_boxes(
-                detections, censor_classes, padding, meta.width, meta.height
-            )
+            boxes = build_censor_boxes(detections, censor_classes, padding, meta.width, meta.height)
             server.send_censor(meta.display_id, meta.width, meta.height, boxes)
 
     except KeyboardInterrupt:
@@ -184,11 +185,15 @@ def main():
         "--confidence", type=float, default=0.0, help="Min detection confidence (default: 0.0)"
     )
     start_parser.add_argument(
-        "--censor", choices=["female", "male", "all"], default="all",
+        "--censor",
+        choices=["female", "male", "all"],
+        default="all",
         help="What to censor: female, male, or all (default: all)",
     )
     start_parser.add_argument(
-        "--padding", type=float, default=0.0,
+        "--padding",
+        type=float,
+        default=0.0,
         help="Box expansion fraction (default: 0.0)",
     )
     start_parser.add_argument(
