@@ -28,12 +28,10 @@ CENSOR_PRESETS: dict[str, frozenset[str]] = {
     ),
 }
 
-DEFAULT_CENSOR_CLASSES = CENSOR_PRESETS["all"]
-
 
 def filter_detections(
     detections: list[Detection],
-    classes: frozenset[str] = DEFAULT_CENSOR_CLASSES,
+    classes: frozenset[str] = CENSOR_PRESETS["all"],
 ) -> list[Detection]:
     """Return only detections whose class_name is in the given set."""
     return [d for d in detections if d.class_name in classes]

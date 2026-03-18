@@ -82,6 +82,8 @@ def pack_cmd_censor(
     boxes: list[tuple[int, int, int, int]],
 ) -> bytes:
     """Pack a CMD_CENSOR message with overlay box coordinates."""
+    if len(boxes) > 65535:
+        raise ValueError(f"Too many boxes: {len(boxes)} exceeds max 65535 (uint16)")
     parts = [struct.pack(CENSOR_HEADER_FMT, display_id, frame_width, frame_height, len(boxes))]
     for x, y, w, h in boxes:
         parts.append(struct.pack(CENSOR_BOX_FMT, x, y, w, h))

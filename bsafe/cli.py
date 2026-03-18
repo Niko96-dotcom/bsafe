@@ -3,6 +3,7 @@ import logging
 import os
 import queue
 import signal
+import subprocess
 import sys
 import tempfile
 import time
@@ -35,11 +36,17 @@ def cmd_start(args):
     if fps < 1 or fps > 255:
         print("Error: --fps must be between 1 and 255", file=sys.stderr)
         sys.exit(1)
+    if args.padding < 0:
+        print("Error: --padding must be >= 0", file=sys.stderr)
+        sys.exit(1)
+    if not (0.0 <= args.smooth_alpha <= 1.0):
+        print("Error: --smooth-alpha must be between 0.0 and 1.0", file=sys.stderr)
+        sys.exit(1)
     socket_path = os.path.join(tempfile.gettempdir(), f"bsafe-{os.getpid()}.sock")
 
     censor_classes = CENSOR_PRESETS[args.censor]
     padding = args.padding
-    tracker = BoxTracker(persist_frames=8, smooth_alpha=0.5)
+    tracker = BoxTracker(persist_frames=args.persist_frames, smooth_alpha=args.smooth_alpha)
 
     # Initialize detector
     print("Loading NudeNet model...", flush=True)
@@ -93,7 +100,11 @@ def cmd_start(args):
         detector.close()
         if helper.poll() is None:
             helper.terminate()
-            helper.wait(timeout=5)
+            try:
+                helper.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                helper.kill()
+                helper.wait()
         print("Stopped.")
 
 
@@ -209,8 +220,7 @@ def main():
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     start_parser = subparsers.add_parser("start", help="Start the censoring process")
-    # 60 FPS tested as sustainable on MacBook Pro M4 Pro (capture + inference loop)
-    start_parser.add_argument("--fps", type=int, default=60, help="Capture FPS (default: 60)")
+    start_parser.add_argument("--fps", type=int, default=45, help="Capture FPS (default: 45)")
     # Aggressive default: empirical tests showed confidence 0.0 catches edge cases
     # that higher thresholds miss, with acceptable false-positive rate for censoring
     start_parser.add_argument(
@@ -227,6 +237,18 @@ def main():
         type=float,
         default=0.0,
         help="Box expansion fraction (default: 0.0)",
+    )
+    start_parser.add_argument(
+        "--persist-frames",
+        type=int,
+        default=8,
+        help="Frames a box persists after disappearing (default: 8)",
+    )
+    start_parser.add_argument(
+        "--smooth-alpha",
+        type=float,
+        default=0.5,
+        help="EMA weight for box position smoothing, 0.0-1.0 (default: 0.5)",
     )
     start_parser.add_argument(
         "--dry-run", action="store_true", help="Run without Swift helper or detector"

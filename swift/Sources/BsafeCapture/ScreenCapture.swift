@@ -31,6 +31,8 @@ class ScreenCapture: NSObject, SCStreamDelegate {
                 return
             }
 
+            let captureGroup = DispatchGroup()
+
             for display in content.displays {
                 let filter = SCContentFilter(display: display, excludingWindows: [])
                 let config = SCStreamConfiguration()
@@ -48,10 +50,12 @@ class ScreenCapture: NSObject, SCStreamDelegate {
                 do {
                     let stream = SCStream(filter: filter, configuration: config, delegate: self)
                     try stream.addStreamOutput(output, type: .screen, sampleHandlerQueue: .global())
+                    captureGroup.enter()
                     stream.startCapture { captureError in
                         if let captureError {
                             fputs("BsafeCapture: failed to start capture for display \(display.displayID): \(captureError)\n", stderr)
                         }
+                        captureGroup.leave()
                     }
                     self.streams.append((displayID: display.displayID, stream: stream, output: output))
                 } catch {
@@ -59,14 +63,15 @@ class ScreenCapture: NSObject, SCStreamDelegate {
                 }
             }
 
-            if self.streams.isEmpty {
-                startError = NSError(
-                    domain: "BsafeCapture", code: 2,
-                    userInfo: [NSLocalizedDescriptionKey: "Failed to start capture on any display"]
-                )
+            captureGroup.notify(queue: .global()) {
+                if self.streams.isEmpty {
+                    startError = NSError(
+                        domain: "BsafeCapture", code: 2,
+                        userInfo: [NSLocalizedDescriptionKey: "Failed to start capture on any display"]
+                    )
+                }
+                semaphore.signal()
             }
-
-            semaphore.signal()
         }
 
         semaphore.wait()

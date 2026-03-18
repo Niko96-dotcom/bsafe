@@ -1,7 +1,7 @@
 """Tests for censor filtering and box padding."""
 
 from bsafe.censor import (
-    DEFAULT_CENSOR_CLASSES,
+    CENSOR_PRESETS,
     build_censor_boxes,
     filter_detections,
     merge_overlapping_boxes,
@@ -20,19 +20,19 @@ def test_filter_detections_keeps_matching():
         _det("FACE_FEMALE"),
         _det("MALE_GENITALIA_EXPOSED"),
     ]
-    result = filter_detections(dets, DEFAULT_CENSOR_CLASSES)
+    result = filter_detections(dets, CENSOR_PRESETS["all"])
     assert len(result) == 2
     assert result[0].class_name == "FEMALE_BREAST_EXPOSED"
     assert result[1].class_name == "MALE_GENITALIA_EXPOSED"
 
 
 def test_filter_detections_empty_input():
-    assert filter_detections([], DEFAULT_CENSOR_CLASSES) == []
+    assert filter_detections([], CENSOR_PRESETS["all"]) == []
 
 
 def test_filter_detections_none_match():
     dets = [_det("FACE_FEMALE"), _det("BELLY_EXPOSED")]
-    assert filter_detections(dets, DEFAULT_CENSOR_CLASSES) == []
+    assert filter_detections(dets, CENSOR_PRESETS["all"]) == []
 
 
 def test_pad_box_no_padding():
@@ -73,13 +73,13 @@ def test_build_censor_boxes():
         _det("FACE_FEMALE", box=(300, 300, 80, 60)),
         _det("BUTTOCKS_EXPOSED", box=(500, 500, 80, 60)),
     ]
-    boxes = build_censor_boxes(dets, DEFAULT_CENSOR_CLASSES, 0.0, 1920, 1080)
+    boxes = build_censor_boxes(dets, CENSOR_PRESETS["all"], 0.0, 1920, 1080)
     assert len(boxes) == 1
     assert boxes[0] == (100, 100, 80, 60)
 
 
 def test_build_censor_boxes_empty():
-    assert build_censor_boxes([], DEFAULT_CENSOR_CLASSES, 0.2, 1920, 1080) == []
+    assert build_censor_boxes([], CENSOR_PRESETS["all"], 0.2, 1920, 1080) == []
 
 
 # --- merge_overlapping_boxes tests ---

@@ -27,13 +27,11 @@ def find_helper() -> Path | None:
             return p
         logger.warning("BSAFE_HELPER_PATH set but not found: %s", env_path)
 
-    # 2. Walk up from this file to find the project root
-    current = Path(__file__).resolve().parent.parent
-    for _ in range(5):
-        candidate = current / "swift" / ".build" / "release" / HELPER_NAME
-        if candidate.is_file():
-            return candidate
-        current = current.parent
+    # 2. Check relative to the project source tree (development layout)
+    project_root = Path(__file__).resolve().parent.parent
+    candidate = project_root / "swift" / ".build" / "release" / HELPER_NAME
+    if candidate.is_file():
+        return candidate
 
     # 3. Fall back to PATH
     on_path = shutil.which(HELPER_NAME)

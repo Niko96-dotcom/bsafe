@@ -24,7 +24,9 @@ class Detector:
         self.min_confidence = min_confidence
         self._detector = NudeDetector()
         # Reusable temp file to avoid create/delete churn at capture FPS
-        self._tmp_path = tempfile.mktemp(suffix=".jpg", prefix="bsafe-det-")
+        tmp = tempfile.NamedTemporaryFile(suffix=".jpg", prefix="bsafe-det-", delete=False)
+        self._tmp_path = tmp.name
+        tmp.close()
         logger.info("NudeNet detector initialized")
 
     def close(self):

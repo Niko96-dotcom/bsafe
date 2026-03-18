@@ -11,12 +11,10 @@ def test_persistence_after_disappearance():
     # Frame 2: box disappears — should persist
     result = tracker.update(1, [])
     assert len(result) == 1
-    # Frames 3-4: still persisting
+    # Frame 3: still persisting (frames_missing=2)
     result = tracker.update(1, [])
     assert len(result) == 1
-    result = tracker.update(1, [])
-    assert len(result) == 1
-    # Frame 5: expired (missing for 4 frames > persist_frames=3)
+    # Frame 4: expired (frames_missing=3 == persist_frames)
     result = tracker.update(1, [])
     assert len(result) == 0
 

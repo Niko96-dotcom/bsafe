@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 class FrameServer:
     """Binds a Unix socket, accepts one client, sends CMD_START, reads frames into a queue."""
 
-    def __init__(self, socket_path: str, fps: int = 3, maxsize: int = 10):
+    def __init__(self, socket_path: str, fps: int = 45, maxsize: int = 10):
         self.socket_path = socket_path
         self.fps = fps
         self.frame_queue: queue.Queue = queue.Queue(maxsize=maxsize)

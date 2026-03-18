@@ -86,6 +86,15 @@ class SocketClient {
         let length = header.withUnsafeBytes { $0.load(as: UInt32.self).bigEndian }
         let msgType = header[4]
         let payloadSize = Int(length) - 1
+        guard payloadSize >= 0 else {
+            throw NSError(
+                domain: "SocketClient", code: 7,
+                userInfo: [
+                    NSLocalizedDescriptionKey:
+                        "Invalid message length: \(length)"
+                ]
+            )
+        }
         guard payloadSize <= SocketClient.maxMessageSize else {
             throw NSError(
                 domain: "SocketClient", code: 6,

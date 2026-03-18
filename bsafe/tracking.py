@@ -106,7 +106,7 @@ class BoxTracker:
                 tracks.append(_TrackedBox(float(bx), float(by), float(bw), float(bh)))
 
         # Prune expired tracks
-        tracks = [t for t in tracks if t.frames_missing <= self.persist_frames]
+        tracks = [t for t in tracks if t.frames_missing < self.persist_frames]
 
         self._tracks[display_id] = tracks
 
