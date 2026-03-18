@@ -2,6 +2,10 @@
 
 from bsafe.detector import Detection
 
+# How much the full-censor mode expands the area; 3x means width and height
+# are each tripled (9x area), centered on the original box.
+FULL_CENSOR_MULTIPLIER = 3
+
 # BUTTOCKS_EXPOSED is intentionally excluded — too many false positives in practice
 # (e.g. tight clothing, seated posture) and low user-reported value for censoring.
 CENSOR_PRESETS: dict[str, frozenset[str]] = {
@@ -97,6 +101,27 @@ def merge_overlapping_boxes(
 
     # Convert back to (x, y, w, h)
     return [(x1, y1, x2 - x1, y2 - y1) for x1, y1, x2, y2 in rects]
+
+
+def expand_boxes(
+    boxes: list[tuple[int, int, int, int]],
+    multiplier: float,
+    display_w: int,
+    display_h: int,
+) -> list[tuple[int, int, int, int]]:
+    """Scale each box's width/height by multiplier, centered on the original box center, clamped to display bounds."""
+    result = []
+    for x, y, w, h in boxes:
+        cx = x + w / 2
+        cy = y + h / 2
+        nw = w * multiplier
+        nh = h * multiplier
+        nx = int(max(0, cx - nw / 2))
+        ny = int(max(0, cy - nh / 2))
+        nx2 = int(min(display_w, cx + nw / 2))
+        ny2 = int(min(display_h, cy + nh / 2))
+        result.append((nx, ny, nx2 - nx, ny2 - ny))
+    return result
 
 
 def build_censor_boxes(

@@ -9,6 +9,7 @@ from bsafe.protocol import (
     CENSOR_HEADER_FMT,
     CENSOR_HEADER_SIZE,
     CMD_CENSOR,
+    CMD_CENSOR_STYLE,
     CMD_SHUTDOWN,
     CMD_START,
     CMD_STOP,
@@ -19,9 +20,11 @@ from bsafe.protocol import (
     MSG_FRAME,
     FrameMetadata,
     pack_cmd_censor,
+    pack_cmd_censor_style,
     pack_cmd_start,
     pack_message,
     parse_censor_payload,
+    parse_censor_style_payload,
     parse_frame_payload,
     read_message,
 )
@@ -178,3 +181,63 @@ def test_parse_censor_payload_too_short():
 
     with pytest.raises(ValueError, match="too short"):
         parse_censor_payload(b"short")
+
+
+# --- CMD_CENSOR_STYLE tests ---
+
+
+def test_censor_style_round_trip_blur_and_text():
+    raw = pack_cmd_censor_style(blur=1.0, text="BLOCKED")
+    msg_type, payload = read_message(_make_recv(raw))
+    assert msg_type == CMD_CENSOR_STYLE
+    blur, text = parse_censor_style_payload(payload)
+    assert blur == 1.0
+    assert text == "BLOCKED"
+
+
+def test_censor_style_round_trip_no_blur_no_text():
+    raw = pack_cmd_censor_style(blur=0.0, text=None)
+    msg_type, payload = read_message(_make_recv(raw))
+    assert msg_type == CMD_CENSOR_STYLE
+    blur, text = parse_censor_style_payload(payload)
+    assert blur == 0.0
+    assert text is None
+
+
+def test_censor_style_round_trip_blur_only():
+    raw = pack_cmd_censor_style(blur=1.0, text=None)
+    _, payload = read_message(_make_recv(raw))
+    blur, text = parse_censor_style_payload(payload)
+    assert blur == 1.0
+    assert text is None
+
+
+def test_censor_style_round_trip_text_only():
+    raw = pack_cmd_censor_style(blur=0.0, text="NSFW")
+    _, payload = read_message(_make_recv(raw))
+    blur, text = parse_censor_style_payload(payload)
+    assert blur == 0.0
+    assert text == "NSFW"
+
+
+def test_censor_style_partial_blur():
+    raw = pack_cmd_censor_style(blur=0.3, text=None)
+    _, payload = read_message(_make_recv(raw))
+    blur, text = parse_censor_style_payload(payload)
+    assert blur == 0.30
+    assert text is None
+
+
+def test_censor_style_unicode_text():
+    raw = pack_cmd_censor_style(blur=1.0, text="🚫禁止")
+    _, payload = read_message(_make_recv(raw))
+    blur, text = parse_censor_style_payload(payload)
+    assert blur == 1.0
+    assert text == "🚫禁止"
+
+
+def test_parse_censor_style_payload_too_short():
+    import pytest
+
+    with pytest.raises(ValueError, match="too short"):
+        parse_censor_style_payload(b"\x01")

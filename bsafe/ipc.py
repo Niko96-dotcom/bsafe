@@ -10,6 +10,7 @@ from bsafe.protocol import (
     CMD_SHUTDOWN,
     MSG_FRAME,
     pack_cmd_censor,
+    pack_cmd_censor_style,
     pack_cmd_start,
     pack_message,
     parse_frame_payload,
@@ -22,9 +23,18 @@ logger = logging.getLogger(__name__)
 class FrameServer:
     """Binds a Unix socket, accepts one client, sends CMD_START, reads frames into a queue."""
 
-    def __init__(self, socket_path: str, fps: int = 45, maxsize: int = 10):
+    def __init__(
+        self,
+        socket_path: str,
+        fps: int = 45,
+        maxsize: int = 10,
+        blur: float = 0.0,
+        censor_text: str | None = None,
+    ):
         self.socket_path = socket_path
         self.fps = fps
+        self.blur = blur
+        self.censor_text = censor_text
         self.frame_queue: queue.Queue = queue.Queue(maxsize=maxsize)
         self._sock: socket.socket | None = None
         self._client: socket.socket | None = None
@@ -56,6 +66,10 @@ class FrameServer:
 
             # Send CMD_START with desired FPS
             self._send_to_client(pack_cmd_start(self.fps))
+
+            # Send censor style config if blur or text is set
+            if self.blur > 0.0 or self.censor_text is not None:
+                self._send_to_client(pack_cmd_censor_style(self.blur, self.censor_text))
 
             # Read frames
             recv_fn = self._client.recv

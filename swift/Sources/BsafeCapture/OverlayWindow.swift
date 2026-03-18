@@ -1,16 +1,65 @@
 import AppKit
 
-/// NSView subclass that draws black rectangles for censored regions.
+/// NSView subclass that draws censored regions with optional blur and text.
 class CensorView: NSView {
     var boxes: [NSRect] = []
+    var blur: Double = 0.0
+    var text: String? = nil
+    private var effectViews: [NSVisualEffectView] = []
 
     override func draw(_ dirtyRect: NSRect) {
         NSColor.clear.setFill()
         dirtyRect.fill()
 
-        NSColor.black.setFill()
+        if blur <= 0.0 {
+            NSColor.black.setFill()
+            for box in boxes {
+                box.fill()
+            }
+        }
+
+        if let text {
+            let paragraphStyle = NSMutableParagraphStyle()
+            paragraphStyle.alignment = .center
+
+            for box in boxes {
+                let fontSize = min(box.height * 0.3, 48)
+                let attrs: [NSAttributedString.Key: Any] = [
+                    .foregroundColor: NSColor.white,
+                    .font: NSFont.boldSystemFont(ofSize: fontSize),
+                    .paragraphStyle: paragraphStyle,
+                ]
+                let nsText = text as NSString
+                let textSize = nsText.size(withAttributes: attrs)
+                let textRect = NSRect(
+                    x: box.origin.x + (box.width - textSize.width) / 2,
+                    y: box.origin.y + (box.height - textSize.height) / 2,
+                    width: textSize.width,
+                    height: textSize.height
+                )
+                nsText.draw(in: textRect, withAttributes: attrs)
+            }
+        }
+    }
+
+    /// Sync NSVisualEffectView subviews with current boxes when blur is enabled.
+    func updateEffectViews() {
+        // Remove old effect views
+        for view in effectViews {
+            view.removeFromSuperview()
+        }
+        effectViews.removeAll()
+
+        guard blur > 0.0 else { return }
+
         for box in boxes {
-            box.fill()
+            let effectView = NSVisualEffectView(frame: box)
+            effectView.blendingMode = .behindWindow
+            effectView.material = .fullScreenUI
+            effectView.state = .active
+            effectView.alphaValue = CGFloat(blur)
+            addSubview(effectView)
+            effectViews.append(effectView)
         }
     }
 }
@@ -50,7 +99,7 @@ class CensorOverlay {
 
     /// Update overlay boxes. Converts pixel-space coordinates to display points and flips Y axis.
     /// Can be called from any thread — dispatches to main.
-    func updateBoxes(_ boxes: [(x: Int32, y: Int32, w: Int32, h: Int32)], frameWidth: UInt32, frameHeight: UInt32) {
+    func updateBoxes(_ boxes: [(x: Int32, y: Int32, w: Int32, h: Int32)], frameWidth: UInt32, frameHeight: UInt32, blur: Double = 0.0, text: String? = nil) {
         let displayW = displayBounds.width
         let displayH = displayBounds.height
         let scaleX = displayW / CGFloat(frameWidth)
@@ -69,7 +118,10 @@ class CensorOverlay {
         }
 
         DispatchQueue.main.async { [weak self] in
+            self?.censorView?.blur = blur
+            self?.censorView?.text = text
             self?.censorView?.boxes = rects
+            self?.censorView?.updateEffectViews()
             self?.censorView?.needsDisplay = true
         }
     }

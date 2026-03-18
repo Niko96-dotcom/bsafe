@@ -2,7 +2,9 @@
 
 from bsafe.censor import (
     CENSOR_PRESETS,
+    FULL_CENSOR_MULTIPLIER,
     build_censor_boxes,
+    expand_boxes,
     filter_detections,
     merge_overlapping_boxes,
     pad_box,
@@ -115,3 +117,57 @@ def test_merge_single_box_unchanged():
 
 def test_merge_empty():
     assert merge_overlapping_boxes([]) == []
+
+
+# --- expand_boxes tests ---
+
+
+def test_expand_boxes_basic():
+    # Box (100, 100, 100, 100) with 3x multiplier → centered expansion
+    # Center: (150, 150), new size: 300x300 → new box: (0, 0, 300, 300)
+    boxes = [(100, 100, 100, 100)]
+    result = expand_boxes(boxes, 3, 1920, 1080)
+    assert len(result) == 1
+    assert result[0] == (0, 0, 300, 300)
+
+
+def test_expand_boxes_no_expansion():
+    boxes = [(100, 100, 50, 50)]
+    result = expand_boxes(boxes, 1, 1920, 1080)
+    assert result == [(100, 100, 50, 50)]
+
+
+def test_expand_boxes_clamps_to_bounds():
+    # Box near edge: center at (25, 25), 3x of 50 = 150 → would go to (-50, -50) but clamped
+    boxes = [(0, 0, 50, 50)]
+    result = expand_boxes(boxes, 3, 200, 200)
+    x, y, w, h = result[0]
+    assert x >= 0
+    assert y >= 0
+    assert x + w <= 200
+    assert y + h <= 200
+
+
+def test_expand_boxes_clamps_bottom_right():
+    # Box near bottom-right corner
+    boxes = [(180, 180, 20, 20)]
+    result = expand_boxes(boxes, 3, 200, 200)
+    x, y, w, h = result[0]
+    assert x >= 0
+    assert y >= 0
+    assert x + w <= 200
+    assert y + h <= 200
+
+
+def test_expand_boxes_empty():
+    assert expand_boxes([], 3, 1920, 1080) == []
+
+
+def test_expand_boxes_multiple():
+    boxes = [(100, 100, 50, 50), (500, 500, 50, 50)]
+    result = expand_boxes(boxes, 2, 1920, 1080)
+    assert len(result) == 2
+
+
+def test_full_censor_multiplier_value():
+    assert FULL_CENSOR_MULTIPLIER == 3

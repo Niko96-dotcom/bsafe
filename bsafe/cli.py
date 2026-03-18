@@ -26,7 +26,12 @@ def cmd_start(args):
         print("\nStopped.")
         return
 
-    from bsafe.censor import CENSOR_PRESETS, build_censor_boxes
+    from bsafe.censor import (
+        CENSOR_PRESETS,
+        FULL_CENSOR_MULTIPLIER,
+        build_censor_boxes,
+        expand_boxes,
+    )
     from bsafe.detector import Detector
     from bsafe.ipc import FrameServer
     from bsafe.swift_helper import spawn_helper
@@ -42,6 +47,9 @@ def cmd_start(args):
     if not (0.0 <= args.smooth_alpha <= 1.0):
         print("Error: --smooth-alpha must be between 0.0 and 1.0", file=sys.stderr)
         sys.exit(1)
+    if not (0.0 <= args.blur <= 1.0):
+        print("Error: --blur must be between 0.0 and 1.0", file=sys.stderr)
+        sys.exit(1)
     socket_path = os.path.join(tempfile.gettempdir(), f"bsafe-{os.getpid()}.sock")
 
     censor_classes = CENSOR_PRESETS[args.censor]
@@ -53,7 +61,7 @@ def cmd_start(args):
     detector = Detector(min_confidence=args.confidence)
 
     # Start IPC server
-    server = FrameServer(socket_path, fps=fps)
+    server = FrameServer(socket_path, fps=fps, blur=args.blur, censor_text=args.censor_text)
     server.start()
 
     # Spawn Swift helper
@@ -90,6 +98,8 @@ def cmd_start(args):
                         meta.display_id,
                     )
             boxes = build_censor_boxes(detections, censor_classes, padding, meta.width, meta.height)
+            if args.full_censor:
+                boxes = expand_boxes(boxes, FULL_CENSOR_MULTIPLIER, meta.width, meta.height)
             boxes = tracker.update(meta.display_id, boxes)
             server.send_censor(meta.display_id, meta.width, meta.height, boxes)
 
@@ -249,6 +259,26 @@ def main():
         type=float,
         default=0.5,
         help="EMA weight for box position smoothing, 0.0-1.0 (default: 0.5)",
+    )
+    start_parser.add_argument(
+        "--blur",
+        nargs="?",
+        type=float,
+        const=1.0,
+        default=0.0,
+        help="Use blur instead of black rectangle; optional intensity 0.0-1.0 (default: 1.0)",
+    )
+    start_parser.add_argument(
+        "--censor-text",
+        nargs="?",
+        const="NSFW",
+        default=None,
+        help='Show text on censored region (default: "NSFW" if flag present with no value)',
+    )
+    start_parser.add_argument(
+        "--full-censor",
+        action="store_true",
+        help="Expand censor area by 3x (9x area)",
     )
     start_parser.add_argument(
         "--dry-run", action="store_true", help="Run without Swift helper or detector"

@@ -10,6 +10,7 @@ MSG_FRAME = 0x01
 CMD_START = 0x10
 CMD_STOP = 0x11
 CMD_CENSOR = 0x20
+CMD_CENSOR_STYLE = 0x21
 CMD_SHUTDOWN = 0xFF
 
 # Header: 4 bytes length + 1 byte type
@@ -111,6 +112,36 @@ def parse_censor_payload(
         boxes.append((x, y, w, h))
         offset += CENSOR_BOX_SIZE
     return display_id, frame_width, frame_height, boxes
+
+
+def pack_cmd_censor_style(blur: float, text: str | None) -> bytes:
+    """Pack a CMD_CENSOR_STYLE message.
+
+    Payload: [1B blur_percent (0-100)][2B text_length][text_bytes (UTF-8)]
+    blur_percent=0 means no blur, 100 means full blur.
+    text_length=0 means no text.
+    """
+    # Quantised to 1% steps (uint8 0-100), so e.g. 0.005 and 0.014 both map to 1%.
+    blur_pct = max(0, min(100, round(blur * 100)))
+    text_bytes = text.encode("utf-8") if text else b""
+    payload = struct.pack("!BH", blur_pct, len(text_bytes)) + text_bytes
+    return pack_message(CMD_CENSOR_STYLE, payload)
+
+
+def parse_censor_style_payload(payload: bytes) -> tuple[float, str | None]:
+    """Parse a CMD_CENSOR_STYLE payload. Returns (blur, text).
+
+    blur is a float 0.0–1.0 (0.0 = no blur, 1.0 = full blur).
+    """
+    if len(payload) < 3:
+        raise ValueError(f"Censor style payload too short: {len(payload)} < 3")
+    blur_pct, text_length = struct.unpack("!BH", payload[:3])
+    if len(payload) < 3 + text_length:
+        raise ValueError(
+            f"Censor style payload too short for text: {len(payload)} < {3 + text_length}"
+        )
+    text = payload[3 : 3 + text_length].decode("utf-8") if text_length > 0 else None
+    return blur_pct / 100.0, text
 
 
 def pack_cmd_start(fps: int) -> bytes:
