@@ -259,9 +259,10 @@ def _concat_chunks(chunks_dir: str, chunk_count: int, output_path: str, input_pa
     list_path = os.path.join(chunks_dir, "concat.txt")
     with open(list_path, "w") as f:
         for i in range(chunk_count):
-            # ffmpeg concat requires escaped single quotes in paths
-            p = _chunk_path(chunks_dir, i).replace("'", "'\\''")
-            f.write(f"file '{p}'\n")
+            # Use just the filename since concat.txt lives inside chunks_dir
+            # and ffmpeg resolves paths relative to the concat file's location
+            fname = f"chunk_{i:04d}.mp4".replace("'", "'\\''")
+            f.write(f"file '{fname}'\n")
 
     # Concat chunks + re-encode to H.264 + mux audio
     tmp_concat = os.path.join(chunks_dir, "concat.mp4")

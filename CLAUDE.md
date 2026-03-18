@@ -12,6 +12,14 @@
 - Keep `CLAUDE.md` updated when adding conventions, entry points, or architectural decisions.
 - When adding or changing CLI flags/defaults, update the config template in `bsafe/config.py` (`generate_default_config()`) to match.
 
+## Python 3.14 syntax
+
+This project targets Python >= 3.14. Some syntax that was invalid or had different semantics in older Python versions is now standard:
+
+- `except A, B:` is valid and means `except (A, B):` (PEP 758). Do **not** "fix" this by adding parentheses — ruff enforces the unparenthesized form. This is **not** the Python 2 `except A as B` pattern; that was removed in Python 3.0.
+
+Trust ruff's formatting output for 3.14-era syntax questions.
+
 ## Privacy
 
 Screen data is personal data. Strict rules:
