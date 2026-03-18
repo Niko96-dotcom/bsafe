@@ -110,8 +110,9 @@ if let firstByte = payload.first {
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
 
-// Create overlay — setup will be called once we know the display ID
-let overlay = CensorOverlay()
+// Overlay dictionary: one CensorOverlay per display, keyed by displayID
+var overlays: [UInt32: CensorOverlay] = [:]
+let overlaysLock = NSLock()
 
 let capture = ScreenCapture(fps: fps)
 
@@ -119,23 +120,24 @@ let capture = ScreenCapture(fps: fps)
 // 0.7 may be a good bandwidth/accuracy tradeoff. Test and adjust if needed.
 let jpegQuality = 0.7
 
-// Track whether overlay has been set up for the display
-var overlayReady = false
-let overlaySetupLock = NSLock()
-
 // Set up frame callback: encode and send
 capture.onFrame = { cgImage, displayID, timestamp in
-    // Set up overlay on first frame (we now know the displayID).
-    // Uses sync to ensure overlay is ready before any updateBoxes call.
-    overlaySetupLock.lock()
-    if !overlayReady {
-        overlayReady = true
-        overlaySetupLock.unlock()
+    // Ensure overlay exists for this display. Create on main thread (sync) if needed.
+    overlaysLock.lock()
+    let hasOverlay = overlays[displayID] != nil
+    overlaysLock.unlock()
+
+    if !hasOverlay {
         DispatchQueue.main.sync {
-            overlay.setup(displayID: displayID)
+            overlaysLock.lock()
+            // Double-check after acquiring lock on main thread
+            if overlays[displayID] == nil {
+                let overlay = CensorOverlay()
+                overlay.setup(displayID: displayID)
+                overlays[displayID] = overlay
+            }
+            overlaysLock.unlock()
         }
-    } else {
-        overlaySetupLock.unlock()
     }
 
     guard let jpegData = FrameEncoder.encode(cgImage, quality: jpegQuality) else {
@@ -182,7 +184,14 @@ DispatchQueue.global().async {
                     fputs("BsafeCapture: failed to parse CMD_CENSOR payload\n", stderr)
                     continue
                 }
-                overlay.updateBoxes(censor.boxes, frameWidth: censor.frameWidth, frameHeight: censor.frameHeight)
+                overlaysLock.lock()
+                let overlay = overlays[censor.displayID]
+                overlaysLock.unlock()
+                if let overlay {
+                    overlay.updateBoxes(censor.boxes, frameWidth: censor.frameWidth, frameHeight: censor.frameHeight)
+                } else {
+                    fputs("BsafeCapture: no overlay for display \(censor.displayID), skipping censor\n", stderr)
+                }
             case 0xFF:  // CMD_SHUTDOWN
                 print("BsafeCapture: received shutdown command")
                 capture.stop()

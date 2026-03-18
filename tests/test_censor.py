@@ -4,6 +4,7 @@ from bsafe.censor import (
     DEFAULT_CENSOR_CLASSES,
     build_censor_boxes,
     filter_detections,
+    merge_overlapping_boxes,
     pad_box,
 )
 from bsafe.detector import Detection
@@ -79,3 +80,38 @@ def test_build_censor_boxes():
 
 def test_build_censor_boxes_empty():
     assert build_censor_boxes([], DEFAULT_CENSOR_CLASSES, 0.2, 1920, 1080) == []
+
+
+# --- merge_overlapping_boxes tests ---
+
+
+def test_merge_non_overlapping_stay_separate():
+    boxes = [(0, 0, 50, 50), (200, 200, 50, 50)]
+    result = merge_overlapping_boxes(boxes)
+    assert len(result) == 2
+    assert (0, 0, 50, 50) in result
+    assert (200, 200, 50, 50) in result
+
+
+def test_merge_overlapping_pair():
+    boxes = [(0, 0, 60, 60), (30, 30, 60, 60)]
+    result = merge_overlapping_boxes(boxes)
+    assert len(result) == 1
+    assert result[0] == (0, 0, 90, 90)
+
+
+def test_merge_transitive_overlap():
+    # A overlaps B, B overlaps C → all three merge into one
+    boxes = [(0, 0, 40, 40), (30, 0, 40, 40), (60, 0, 40, 40)]
+    result = merge_overlapping_boxes(boxes)
+    assert len(result) == 1
+    assert result[0] == (0, 0, 100, 40)
+
+
+def test_merge_single_box_unchanged():
+    boxes = [(10, 20, 30, 40)]
+    assert merge_overlapping_boxes(boxes) == [(10, 20, 30, 40)]
+
+
+def test_merge_empty():
+    assert merge_overlapping_boxes([]) == []

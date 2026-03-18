@@ -29,6 +29,7 @@ def cmd_start(args):
     from bsafe.detector import Detector
     from bsafe.ipc import FrameServer
     from bsafe.swift_helper import spawn_helper
+    from bsafe.tracking import BoxTracker
 
     fps = args.fps
     if fps < 1 or fps > 255:
@@ -38,6 +39,7 @@ def cmd_start(args):
 
     censor_classes = CENSOR_PRESETS[args.censor]
     padding = args.padding
+    tracker = BoxTracker(persist_frames=8, smooth_alpha=0.5)
 
     # Initialize detector
     print("Loading NudeNet model...", flush=True)
@@ -81,6 +83,7 @@ def cmd_start(args):
                         meta.display_id,
                     )
             boxes = build_censor_boxes(detections, censor_classes, padding, meta.width, meta.height)
+            boxes = tracker.update(meta.display_id, boxes)
             server.send_censor(meta.display_id, meta.width, meta.height, boxes)
 
     except KeyboardInterrupt:

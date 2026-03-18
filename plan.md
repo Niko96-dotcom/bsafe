@@ -16,10 +16,9 @@
 
 ## Phase 3 — Refinement
 
-- Face-aware padding exclusion (avoid censoring heads near nudity).
-- Temporal smoothing and box tracking to reduce flicker.
+- Multi-monitor support: Swift captures all displays, manages per-display overlays.
 - Box merging for overlapping detections.
-- Multi-monitor and Retina scaling support.
+- Temporal smoothing and box tracking (EMA + persistence) to reduce flicker.
 
 ## Phase 4 — Hardening
 
