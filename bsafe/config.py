@@ -6,6 +6,7 @@ CONFIG_PATH = os.path.expanduser("~/.config/bsafe/config.toml")
 VALID_KEYS = {
     "start": {"fps", "dry_run"},
     "video": {"fps", "chunk_frames"},
+    "image": set(),
     "common": {
         "confidence",
         "censor",
@@ -39,6 +40,10 @@ dry_run = false
 [video]
 # fps =              # unset = use native video FPS
 # chunk_frames =     # unset = 5000
+
+[image]
+# No image-specific keys — uses [common] settings only.
+# Note: persist_frames and smooth_alpha from [common] are ignored for images.
 
 [common]
 confidence = 0.0

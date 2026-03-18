@@ -30,18 +30,6 @@ def _add_censor_args(parser):
         help="Box expansion fraction (default: 0.0)",
     )
     parser.add_argument(
-        "--persist-frames",
-        type=int,
-        default=8,
-        help="Frames a box persists after disappearing (default: 8)",
-    )
-    parser.add_argument(
-        "--smooth-alpha",
-        type=float,
-        default=0.5,
-        help="EMA weight for box position smoothing, 0.0-1.0 (default: 0.5)",
-    )
-    parser.add_argument(
         "--blur",
         nargs="?",
         type=float,
@@ -103,21 +91,39 @@ def _add_censor_args(parser):
     parser.add_argument("-v", "--verbose", action="store_true", help="Verbose logging")
 
 
+def _add_temporal_args(parser):
+    """Add temporal tracking flags (only for live/video, not image)."""
+    parser.add_argument(
+        "--persist-frames",
+        type=int,
+        default=8,
+        help="Frames a box persists after disappearing (default: 8)",
+    )
+    parser.add_argument(
+        "--smooth-alpha",
+        type=float,
+        default=0.5,
+        help="EMA weight for box position smoothing, 0.0-1.0 (default: 0.5)",
+    )
+
+
 def _validate_censor_args(args):
     """Validate shared censor arguments. Exits on error."""
     if args.padding < 0:
         print("Error: --padding must be >= 0", file=sys.stderr)
         sys.exit(1)
-    if not (0.0 <= args.smooth_alpha <= 1.0):
+    if hasattr(args, "smooth_alpha") and not (0.0 <= args.smooth_alpha <= 1.0):
         print("Error: --smooth-alpha must be between 0.0 and 1.0", file=sys.stderr)
         sys.exit(1)
-    if not (0.0 <= args.blur <= 3.0):
+    blur = args.blur or 0.0
+    pixels = args.pixels or 0.0
+    if not (0.0 <= blur <= 3.0):
         print("Error: --blur must be between 0.0 and 3.0", file=sys.stderr)
         sys.exit(1)
-    if not (0.0 <= args.pixels <= 3.0):
+    if not (0.0 <= pixels <= 3.0):
         print("Error: --pixels must be between 0.0 and 3.0", file=sys.stderr)
         sys.exit(1)
-    if args.blur > 0.0 and args.pixels > 0.0:
+    if blur > 0.0 and pixels > 0.0:
         print("Error: --blur and --pixels are mutually exclusive", file=sys.stderr)
         sys.exit(1)
 
@@ -260,6 +266,42 @@ def cmd_video(args):
             chunk_frames=args.chunk_frames,
             verbose=args.verbose,
         )
+    except KeyboardInterrupt:
+        print("\nInterrupted.", file=sys.stderr)
+        sys.exit(130)
+    except Exception as e:
+        print(f"\nError: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_image(args):
+    _validate_censor_args(args)
+
+    from bsafe.censor import CensorConfig
+    from bsafe.image import process_image
+
+    censor_config = CensorConfig(
+        preset=args.censor,
+        covered=args.covered,
+        face_male=args.face_male,
+        face_female=args.face_female,
+        feet=args.feet,
+    )
+
+    try:
+        output_path = process_image(
+            args.input,
+            confidence=args.confidence,
+            censor_config=censor_config,
+            padding=args.padding,
+            blur=args.blur,
+            pixels=args.pixels,
+            censor_text=args.censor_text,
+            full_censor=args.full_censor,
+            model=args.model,
+            verbose=args.verbose,
+        )
+        print(output_path)
     except KeyboardInterrupt:
         print("\nInterrupted.", file=sys.stderr)
         sys.exit(130)
@@ -411,6 +453,7 @@ def main():
     start_parser = subparsers.add_parser("start", help="Start the censoring process")
     start_parser.add_argument("--fps", type=int, default=45, help="Capture FPS (default: 45)")
     _add_censor_args(start_parser)
+    _add_temporal_args(start_parser)
     start_parser.add_argument(
         "--dry-run",
         action=argparse.BooleanOptionalAction,
@@ -434,6 +477,16 @@ def main():
         "Smaller chunks use less memory but add brief tracking gaps at boundaries.",
     )
     _add_censor_args(video_parser)
+    _add_temporal_args(video_parser)
+
+    # image subcommand
+    image_parser = subparsers.add_parser(
+        "image", help="Process an image file and output a censored copy"
+    )
+    image_parser.add_argument(
+        "input", help="Path to image file (.jpg, .jpeg, .png, .bmp, .webp, .tif, .tiff)"
+    )
+    _add_censor_args(image_parser)
 
     subparsers.add_parser("doctor", help="Check system requirements")
     subparsers.add_parser("bootstrap", help="Install dependencies and build Swift helper")
@@ -443,10 +496,13 @@ def main():
     if config:
         start_config = {**config.get("common", {}), **config.get("start", {})}
         video_config = {**config.get("common", {}), **config.get("video", {})}
+        image_config = {**config.get("common", {}), **config.get("image", {})}
         if start_config:
             start_parser.set_defaults(**start_config)
         if video_config:
             video_parser.set_defaults(**video_config)
+        if image_config:
+            image_parser.set_defaults(**image_config)
 
     args = parser.parse_args()
 
@@ -460,6 +516,7 @@ def main():
         "doctor": cmd_doctor,
         "bootstrap": cmd_bootstrap,
         "video": cmd_video,
+        "image": cmd_image,
     }
 
     faulthandler.enable()
