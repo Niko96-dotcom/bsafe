@@ -4,6 +4,7 @@ import ctypes
 import ctypes.util
 import gc
 import logging
+import multiprocessing
 import os
 import shutil
 import signal
@@ -28,6 +29,7 @@ logger = logging.getLogger(__name__)
 SUPPORTED_EXTENSIONS = {".mp4", ".m4v", ".mov"}
 _CHUNK_FRAMES = 5000  # frames per chunk — memory resets between chunks
 _MEMORY_HIGH_MB = 4096  # log a warning when RSS exceeds this
+_MAX_CHUNK_RETRIES = 3
 
 
 def _get_rss_mb() -> float:
@@ -91,8 +93,9 @@ def _chunk_frame_count(path: str) -> int:
     return n
 
 
-def _find_completed_chunks(chunks_dir: str, expected_size: int, last_chunk_size: int,
-                           total_chunks: int) -> int:
+def _find_completed_chunks(
+    chunks_dir: str, expected_size: int, last_chunk_size: int, total_chunks: int
+) -> int:
     """Return the number of fully completed chunks (contiguous from 0)."""
     completed = 0
     for i in range(total_chunks):
@@ -221,8 +224,20 @@ def _process_chunk(
         detector.close()
 
 
-def _concat_chunks(chunks_dir: str, chunk_count: int, output_path: str,
-                   input_path: str) -> None:
+def _run_chunk_subprocess(**kwargs) -> int:
+    """Run _process_chunk in a spawned subprocess and return its exit code.
+
+    Returns 0 on success, negative value if killed by signal (e.g. -9 for
+    SIGKILL/OOM), or 1 on any other failure.
+    """
+    ctx = multiprocessing.get_context("spawn")
+    proc = ctx.Process(target=_process_chunk, kwargs=kwargs)
+    proc.start()
+    proc.join()
+    return proc.exitcode if proc.exitcode is not None else 1
+
+
+def _concat_chunks(chunks_dir: str, chunk_count: int, output_path: str, input_path: str) -> None:
     """Concatenate chunk files and mux audio from the original."""
     ffmpeg = shutil.which("ffmpeg")
 
@@ -254,16 +269,26 @@ def _concat_chunks(chunks_dir: str, chunk_count: int, output_path: str,
         result = subprocess.run(
             [
                 ffmpeg,
-                "-f", "concat",
-                "-safe", "0",
-                "-i", list_path,
-                "-i", input_path,
-                "-c:v", "libx264",
-                "-preset", "fast",
-                "-crf", "18",
-                "-c:a", "aac",
-                "-map", "0:v:0",
-                "-map", "1:a:0?",
+                "-f",
+                "concat",
+                "-safe",
+                "0",
+                "-i",
+                list_path,
+                "-i",
+                input_path,
+                "-c:v",
+                "libx264",
+                "-preset",
+                "fast",
+                "-crf",
+                "18",
+                "-c:a",
+                "aac",
+                "-map",
+                "0:v:0",
+                "-map",
+                "1:a:0?",
                 "-shortest",
                 "-y",
                 tmp_concat,
@@ -273,19 +298,23 @@ def _concat_chunks(chunks_dir: str, chunk_count: int, output_path: str,
             timeout=600,
         )
         if result.returncode != 0:
-            logger.warning(
-                "ffmpeg concat failed (exit %d): %s", result.returncode, result.stderr
-            )
+            logger.warning("ffmpeg concat failed (exit %d): %s", result.returncode, result.stderr)
             # Try without audio
             result2 = subprocess.run(
                 [
                     ffmpeg,
-                    "-f", "concat",
-                    "-safe", "0",
-                    "-i", list_path,
-                    "-c:v", "libx264",
-                    "-preset", "fast",
-                    "-crf", "18",
+                    "-f",
+                    "concat",
+                    "-safe",
+                    "0",
+                    "-i",
+                    list_path,
+                    "-c:v",
+                    "libx264",
+                    "-preset",
+                    "fast",
+                    "-crf",
+                    "18",
                     "-y",
                     tmp_concat,
                 ],
@@ -320,14 +349,22 @@ def _mux_audio(tmp_path: str, input_path: str, output_path: str) -> None:
         result = subprocess.run(
             [
                 ffmpeg,
-                "-i", tmp_path,
-                "-i", input_path,
-                "-c:v", "libx264",
-                "-preset", "fast",
-                "-crf", "18",
-                "-c:a", "aac",
-                "-map", "0:v:0",
-                "-map", "1:a:0?",
+                "-i",
+                tmp_path,
+                "-i",
+                input_path,
+                "-c:v",
+                "libx264",
+                "-preset",
+                "fast",
+                "-crf",
+                "18",
+                "-c:a",
+                "aac",
+                "-map",
+                "0:v:0",
+                "-map",
+                "1:a:0?",
                 "-shortest",
                 "-y",
                 output_path,
@@ -436,13 +473,12 @@ def process_video(
     )
 
     # Check for completed chunks from a previous run
-    completed = _find_completed_chunks(
-        chunks_dir, frames_per_chunk, last_chunk_size, total_chunks
-    )
+    completed = _find_completed_chunks(chunks_dir, frames_per_chunk, last_chunk_size, total_chunks)
     if completed > 0:
         skipped_frames = completed * frames_per_chunk
-        print(f"  Resuming: {completed}/{total_chunks} chunks already done "
-              f"({skipped_frames} frames)")
+        print(
+            f"  Resuming: {completed}/{total_chunks} chunks already done ({skipped_frames} frames)"
+        )
 
     # SIGTERM handler
     def _sigterm_handler(signum, _frame):
@@ -465,14 +501,11 @@ def process_video(
             expected = last_chunk_size if chunk_idx == total_chunks - 1 else frames_per_chunk
             chunk_file = _chunk_path(chunks_dir, chunk_idx)
 
-            print(f"\n  Chunk {chunk_idx + 1}/{total_chunks} — loading model...",
-                  flush=True)
-
-            _process_chunk(
-                input_path,
-                chunk_file,
-                start_frame,
-                expected,
+            chunk_kwargs = dict(
+                input_path=input_path,
+                chunk_output=chunk_file,
+                start_frame=start_frame,
+                num_frames=expected,
                 native_fps=native_fps,
                 width=width,
                 height=height,
@@ -490,6 +523,39 @@ def process_video(
                 total_frames=total_frames,
                 t_start=t_start,
             )
+
+            for attempt in range(1, _MAX_CHUNK_RETRIES + 1):
+                print(
+                    f"\n  Chunk {chunk_idx + 1}/{total_chunks} — loading model...",
+                    flush=True,
+                )
+
+                exit_code = _run_chunk_subprocess(**chunk_kwargs)
+
+                if exit_code == 0:
+                    break
+
+                # Clean up partial chunk file
+                if os.path.isfile(chunk_file):
+                    try:
+                        os.unlink(chunk_file)
+                    except OSError:
+                        pass
+
+                if attempt < _MAX_CHUNK_RETRIES:
+                    print(
+                        f"\n  Chunk {chunk_idx + 1} failed (exit code {exit_code}), "
+                        f"retry {attempt + 1}/{_MAX_CHUNK_RETRIES}...",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    gc.collect()
+                else:
+                    raise RuntimeError(
+                        f"Chunk {chunk_idx + 1} failed after {_MAX_CHUNK_RETRIES} "
+                        f"attempts (last exit code: {exit_code}). "
+                        f"Try reducing --chunk-frames to lower memory usage."
+                    )
 
             # Force memory cleanup between chunks
             gc.collect()

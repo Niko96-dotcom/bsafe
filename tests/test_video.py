@@ -5,7 +5,12 @@ import cv2
 import numpy as np
 import pytest
 
-from bsafe.video import SUPPORTED_EXTENSIONS, _CHUNK_FRAMES, process_video
+from bsafe.video import (
+    SUPPORTED_EXTENSIONS,
+    _CHUNK_FRAMES,
+    _process_chunk,
+    process_video,
+)
 
 
 def _create_test_video(path, frames=5, width=64, height=64, fps=10.0):
@@ -28,10 +33,19 @@ def test_video(tmp_path):
     return path
 
 
+def _inprocess_chunk_subprocess(**kwargs):
+    """Run _process_chunk in the current process so mocks apply."""
+    _process_chunk(**kwargs)
+    return 0
+
+
 @pytest.fixture
 def mock_detector():
     """Mock the Detector to avoid loading NudeNet."""
-    with patch("bsafe.video.Detector") as MockDetector:
+    with (
+        patch("bsafe.video.Detector") as MockDetector,
+        patch("bsafe.video._run_chunk_subprocess", side_effect=_inprocess_chunk_subprocess),
+    ):
         instance = MagicMock()
         instance.detect.return_value = []
         instance.detect_frame.return_value = []
@@ -131,3 +145,32 @@ def test_resume_from_partial(tmp_path, mock_detector):
     assert os.path.exists(output)
     # Chunks should be cleaned up
     assert not os.path.exists(chunks_dir)
+
+
+def test_chunk_retry_on_subprocess_failure(test_video, mock_detector):
+    """Chunk should complete after a transient subprocess failure."""
+    call_count = 0
+
+    def _fail_then_succeed(**kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return -9  # simulate OOM kill
+        # Actually process the chunk on retry
+        return _inprocess_chunk_subprocess(**kwargs)
+
+    # Override the mock_detector's _run_chunk_subprocess patch
+    with patch("bsafe.video._run_chunk_subprocess", side_effect=_fail_then_succeed):
+        output = process_video(test_video)
+        assert os.path.exists(output)
+        assert call_count == 2
+
+
+def test_chunk_retry_exhausted(test_video, mock_detector):
+    """RuntimeError should be raised after all retries are exhausted."""
+    with patch(
+        "bsafe.video._run_chunk_subprocess",
+        return_value=-9,
+    ):
+        with pytest.raises(RuntimeError, match="--chunk-frames"):
+            process_video(test_video)
