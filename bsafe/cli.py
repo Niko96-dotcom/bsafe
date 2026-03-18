@@ -266,6 +266,7 @@ def cmd_video(args):
             chunk_frames=args.chunk_frames,
             verbose=args.verbose,
         )
+        print("\a", end="", flush=True)
     except KeyboardInterrupt:
         print("\nInterrupted.", file=sys.stderr)
         sys.exit(130)
@@ -302,6 +303,7 @@ def cmd_image(args):
             verbose=args.verbose,
         )
         print(output_path)
+        print("\a", end="", flush=True)
     except KeyboardInterrupt:
         print("\nInterrupted.", file=sys.stderr)
         sys.exit(130)
