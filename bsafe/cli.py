@@ -69,6 +69,14 @@ def _add_censor_args(parser):
         help="Expand censor area by 3x (9x area)",
     )
     parser.add_argument(
+        "--covered",
+        action="store_true",
+        help="Also censor covered body parts (anus, buttocks; breasts when female/all)",
+    )
+    parser.add_argument("--face-male", action="store_true", help="Also censor male faces")
+    parser.add_argument("--face-female", action="store_true", help="Also censor female faces")
+    parser.add_argument("--feet", action="store_true", help="Also censor exposed feet")
+    parser.add_argument(
         "--model",
         choices=["320n", "640m"],
         default=None,
@@ -112,10 +120,10 @@ def cmd_start(args):
         return
 
     from bsafe.censor import (
-        CENSOR_PRESETS,
         FULL_CENSOR_MULTIPLIER,
         build_censor_boxes,
         expand_boxes,
+        resolve_censor_classes,
     )
     from bsafe.detector import Detector
     from bsafe.ipc import FrameServer
@@ -129,7 +137,13 @@ def cmd_start(args):
     _validate_censor_args(args)
     socket_path = os.path.join(tempfile.gettempdir(), f"bsafe-{os.getpid()}.sock")
 
-    censor_classes = CENSOR_PRESETS[args.censor]
+    censor_classes = resolve_censor_classes(
+        args.censor,
+        covered=args.covered,
+        face_male=args.face_male,
+        face_female=args.face_female,
+        feet=args.feet,
+    )
     padding = args.padding
     tracker = BoxTracker(persist_frames=args.persist_frames, smooth_alpha=args.smooth_alpha)
 
@@ -200,13 +214,22 @@ def cmd_start(args):
 def cmd_video(args):
     _validate_censor_args(args)
 
+    from bsafe.censor import CensorConfig
     from bsafe.video import process_video
+
+    censor_config = CensorConfig(
+        preset=args.censor,
+        covered=args.covered,
+        face_male=args.face_male,
+        face_female=args.face_female,
+        feet=args.feet,
+    )
 
     try:
         process_video(
             args.input,
             confidence=args.confidence,
-            censor=args.censor,
+            censor_config=censor_config,
             padding=args.padding,
             persist_frames=args.persist_frames,
             smooth_alpha=args.smooth_alpha,

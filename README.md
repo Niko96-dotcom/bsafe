@@ -61,6 +61,10 @@ Shared flags (work with both `start` and `video`):
 - `--pixels [N]` — pixelation effect (default intensity: 1.0)
 - `--censor-text [TEXT]` — overlay text on censored regions (default: "NSFW")
 - `--model {320n,640m}` — detection model (default: `320n`, fast). `640m` is more accurate but requires a manual download (see below)
+- `--covered` — also censor covered body parts (anus, buttocks; breasts when `--censor` is `female` or `all`)
+- `--face-male` — also censor male faces
+- `--face-female` — also censor female faces
+- `--feet` — also censor exposed feet
 - `--full-censor` — expand censor area by 3x
 - `-v` / `--verbose` — enable debug logging
 

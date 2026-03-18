@@ -1,13 +1,17 @@
 """Tests for censor filtering and box padding."""
 
+import pytest
+
 from bsafe.censor import (
     CENSOR_PRESETS,
     FULL_CENSOR_MULTIPLIER,
+    CensorConfig,
     build_censor_boxes,
     expand_boxes,
     filter_detections,
     merge_overlapping_boxes,
     pad_box,
+    resolve_censor_classes,
 )
 from bsafe.detector import Detection
 
@@ -171,3 +175,89 @@ def test_expand_boxes_multiple():
 
 def test_full_censor_multiplier_value():
     assert FULL_CENSOR_MULTIPLIER == 3
+
+
+# --- resolve_censor_classes tests ---
+
+
+def test_resolve_no_extra_flags_matches_preset():
+    for preset in ("female", "male", "all"):
+        assert resolve_censor_classes(preset) == CENSOR_PRESETS[preset]
+
+
+def test_resolve_covered_female():
+    result = resolve_censor_classes("female", covered=True)
+    assert "ANUS_COVERED" in result
+    assert "BUTTOCKS_COVERED" in result
+    assert "FEMALE_BREAST_COVERED" in result
+    assert "FEMALE_GENITALIA_COVERED" in result
+    # Original classes still present
+    assert "FEMALE_BREAST_EXPOSED" in result
+
+
+def test_resolve_covered_male():
+    result = resolve_censor_classes("male", covered=True)
+    assert "ANUS_COVERED" in result
+    assert "BUTTOCKS_COVERED" in result
+    assert "FEMALE_BREAST_COVERED" not in result
+    assert "FEMALE_GENITALIA_COVERED" not in result
+
+
+def test_resolve_covered_all():
+    result = resolve_censor_classes("all", covered=True)
+    assert "ANUS_COVERED" in result
+    assert "BUTTOCKS_COVERED" in result
+    assert "FEMALE_BREAST_COVERED" in result
+    assert "FEMALE_GENITALIA_COVERED" in result
+
+
+def test_resolve_face_male():
+    result = resolve_censor_classes("female", face_male=True)
+    assert "FACE_MALE" in result
+    assert "FACE_FEMALE" not in result
+
+
+def test_resolve_face_female():
+    result = resolve_censor_classes("male", face_female=True)
+    assert "FACE_FEMALE" in result
+    assert "FACE_MALE" not in result
+
+
+def test_resolve_feet():
+    result = resolve_censor_classes("all", feet=True)
+    assert "FEET_EXPOSED" in result
+
+
+def test_resolve_all_flags_combined():
+    result = resolve_censor_classes(
+        "all", covered=True, face_male=True, face_female=True, feet=True
+    )
+    assert "ANUS_COVERED" in result
+    assert "BUTTOCKS_COVERED" in result
+    assert "FEMALE_BREAST_COVERED" in result
+    assert "FEMALE_GENITALIA_COVERED" in result
+    assert "FACE_MALE" in result
+    assert "FACE_FEMALE" in result
+    assert "FEET_EXPOSED" in result
+    # Original preset classes still present
+    for cls in CENSOR_PRESETS["all"]:
+        assert cls in result
+
+
+def test_resolve_invalid_preset_raises():
+    with pytest.raises(ValueError, match="unknown censor preset 'nonexistent'"):
+        resolve_censor_classes("nonexistent")
+
+
+# --- CensorConfig tests ---
+
+
+def test_censor_config_resolve_matches_function():
+    config = CensorConfig(preset="all", covered=True, feet=True)
+    expected = resolve_censor_classes("all", covered=True, feet=True)
+    assert config.resolve_classes() == expected
+
+
+def test_censor_config_defaults():
+    config = CensorConfig()
+    assert config.resolve_classes() == CENSOR_PRESETS["all"]

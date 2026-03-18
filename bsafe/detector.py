@@ -26,9 +26,7 @@ def resolve_model(name: str | None) -> str | None:
         return None
 
     if name not in KNOWN_MODELS:
-        raise ValueError(
-            f"unknown model '{name}'. Known models: {', '.join(sorted(KNOWN_MODELS))}"
-        )
+        raise ValueError(f"unknown model '{name}'. Known models: {', '.join(sorted(KNOWN_MODELS))}")
 
     raw_path = KNOWN_MODELS[name]
     assert raw_path is not None

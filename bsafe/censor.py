@@ -1,5 +1,7 @@
 """Censor filtering and box padding for NSFW detections."""
 
+from dataclasses import dataclass
+
 from bsafe.detector import Detection
 
 # How much the full-censor mode expands the area; 3x means width and height
@@ -31,6 +33,55 @@ CENSOR_PRESETS: dict[str, frozenset[str]] = {
         }
     ),
 }
+
+
+@dataclass(frozen=True)
+class CensorConfig:
+    """Groups all censor-related options into a single value object."""
+
+    preset: str = "all"
+    covered: bool = False
+    face_male: bool = False
+    face_female: bool = False
+    feet: bool = False
+
+    def resolve_classes(self) -> frozenset[str]:
+        """Build the set of classes to censor from preset plus additive flags."""
+        return resolve_censor_classes(
+            self.preset,
+            covered=self.covered,
+            face_male=self.face_male,
+            face_female=self.face_female,
+            feet=self.feet,
+        )
+
+
+def resolve_censor_classes(
+    preset: str,
+    *,
+    covered: bool = False,
+    face_male: bool = False,
+    face_female: bool = False,
+    feet: bool = False,
+) -> frozenset[str]:
+    """Build the set of classes to censor from a preset plus additive flags."""
+    if preset not in CENSOR_PRESETS:
+        raise ValueError(
+            f"unknown censor preset '{preset}'. Known presets: {', '.join(sorted(CENSOR_PRESETS))}"
+        )
+    classes = set(CENSOR_PRESETS[preset])
+    if covered:
+        classes.update({"ANUS_COVERED", "BUTTOCKS_COVERED"})
+        # Male breast is considered SFW in most cultures, so only add female breast covered.
+        if preset in ("female", "all"):
+            classes.update({"FEMALE_BREAST_COVERED", "FEMALE_GENITALIA_COVERED"})
+    if face_male:
+        classes.add("FACE_MALE")
+    if face_female:
+        classes.add("FACE_FEMALE")
+    if feet:
+        classes.add("FEET_EXPOSED")
+    return frozenset(classes)
 
 
 def filter_detections(

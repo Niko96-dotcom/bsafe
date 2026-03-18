@@ -9,8 +9,8 @@ import time
 import cv2
 
 from bsafe.censor import (
-    CENSOR_PRESETS,
     FULL_CENSOR_MULTIPLIER,
+    CensorConfig,
     build_censor_boxes,
     expand_boxes,
 )
@@ -39,7 +39,7 @@ def process_video(
     input_path: str,
     *,
     confidence: float = 0.0,
-    censor: str = "all",
+    censor_config: CensorConfig = CensorConfig(),
     padding: float = 0.0,
     persist_frames: int = 8,
     smooth_alpha: float = 0.5,
@@ -98,7 +98,7 @@ def process_video(
     # Init detector and tracker
     print("Loading NudeNet model...", flush=True)
     detector = Detector(min_confidence=confidence, model=model)
-    censor_classes = CENSOR_PRESETS[censor]
+    censor_classes = censor_config.resolve_classes()
     tracker = BoxTracker(persist_frames=persist_frames, smooth_alpha=smooth_alpha)
 
     # Writer: mp4v codec, native FPS
