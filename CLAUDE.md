@@ -12,6 +12,16 @@
 - Keep `CLAUDE.md` updated when adding conventions, entry points, or architectural decisions.
 - When adding or changing CLI flags/defaults, update the config template in `bsafe/config.py` (`generate_default_config()`) to match.
 
+## Before committing
+
+Always run all CI checks locally **before** every commit — format, lint, and tests. Fix any issues before committing. Do not prompt the user to commit; wait for them to ask.
+
+```sh
+uv run ruff format bsafe/ tests/
+uv run ruff check bsafe/ tests/
+uv run pytest
+```
+
 ## Python 3.14 syntax
 
 This project targets Python >= 3.14. Some syntax that was invalid or had different semantics in older Python versions is now standard:
