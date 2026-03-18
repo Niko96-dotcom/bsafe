@@ -53,6 +53,14 @@ Videos are processed in chunks (default: 5000 frames). If the process is killed
 completed chunks are preserved on disk and skipped automatically. All chunks are
 combined into the final output at the end.
 
+### Configuration file
+
+`bsafe bootstrap` creates `~/.bsafe/config.toml` with all default values.
+Edit this file to set your preferred defaults — CLI flags always override it.
+
+Sections: `[start]` for start-only flags, `[video]` for video-only flags,
+`[common]` for shared flags used by both commands.
+
 ### Options
 
 Shared flags (work with both `start` and `video`):

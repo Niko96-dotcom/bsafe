@@ -66,17 +66,34 @@ def _add_censor_args(parser):
     )
     parser.add_argument(
         "--full-censor",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=False,
         help="Expand censor area by 3x (9x area)",
     )
     parser.add_argument(
         "--covered",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=False,
         help="Also censor covered body parts (anus, buttocks; breasts when female/all)",
     )
-    parser.add_argument("--face-male", action="store_true", help="Also censor male faces")
-    parser.add_argument("--face-female", action="store_true", help="Also censor female faces")
-    parser.add_argument("--feet", action="store_true", help="Also censor exposed feet")
+    parser.add_argument(
+        "--face-male",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Also censor male faces",
+    )
+    parser.add_argument(
+        "--face-female",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Also censor female faces",
+    )
+    parser.add_argument(
+        "--feet",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Also censor exposed feet",
+    )
     parser.add_argument(
         "--model",
         choices=["320n", "640m"],
@@ -254,6 +271,8 @@ def cmd_video(args):
 def cmd_bootstrap(args):
     import subprocess
 
+    from bsafe.config import CONFIG_PATH, generate_default_config
+
     project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     swift_dir = os.path.join(project_dir, "swift")
 
@@ -281,11 +300,22 @@ def cmd_bootstrap(args):
     os.makedirs(models_dir, exist_ok=True)
     print(f"Models directory: {models_dir} OK\n")
 
+    # Step 4: Create config file if it doesn't exist
+    config_path = CONFIG_PATH
+    if not os.path.exists(config_path):
+        with open(config_path, "w") as f:
+            f.write(generate_default_config())
+        print(f"Config file: {config_path} CREATED\n")
+    else:
+        print(f"Config file: {config_path} already exists, skipping\n")
+
     print("Bootstrap complete! Run 'bsafe doctor' to verify.")
     _print_alias_hint()
 
 
 def cmd_doctor(args):
+    from bsafe.config import CONFIG_PATH
+
     all_ok = True
 
     # Python version
@@ -304,6 +334,13 @@ def cmd_doctor(args):
     else:
         print(" WARN: bsafe requires macOS")
         all_ok = False
+
+    # Config file (informational only)
+    print(f"Config file: {CONFIG_PATH}", end="")
+    if os.path.exists(CONFIG_PATH):
+        print(" OK")
+    else:
+        print(" NOT FOUND (optional — run bootstrap to create)")
 
     # NudeNet importable
     print("NudeNet: ", end="")
@@ -364,6 +401,8 @@ def _print_alias_hint():
 
 
 def main():
+    from bsafe.config import load_config
+
     parser = argparse.ArgumentParser(prog="bsafe", description="Censor NSFW content on screen")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -372,7 +411,10 @@ def main():
     start_parser.add_argument("--fps", type=int, default=45, help="Capture FPS (default: 45)")
     _add_censor_args(start_parser)
     start_parser.add_argument(
-        "--dry-run", action="store_true", help="Run without Swift helper or detector"
+        "--dry-run",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Run without Swift helper or detector",
     )
 
     # video subcommand
@@ -394,6 +436,16 @@ def main():
 
     subparsers.add_parser("doctor", help="Check system requirements")
     subparsers.add_parser("bootstrap", help="Install dependencies and build Swift helper")
+
+    # Load user config and apply as defaults to subparsers
+    config = load_config()
+    if config:
+        start_config = {**config.get("common", {}), **config.get("start", {})}
+        video_config = {**config.get("common", {}), **config.get("video", {})}
+        if start_config:
+            start_parser.set_defaults(**start_config)
+        if video_config:
+            video_parser.set_defaults(**video_config)
 
     args = parser.parse_args()
 

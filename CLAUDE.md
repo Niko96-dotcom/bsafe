@@ -10,6 +10,7 @@
 - IPC protocol defined in `bsafe/protocol.py`. Python is the socket server, Swift connects as client.
 - Keep `README.md` updated when adding user-facing features, CLI options, or setup steps.
 - Keep `CLAUDE.md` updated when adding conventions, entry points, or architectural decisions.
+- When adding or changing CLI flags/defaults, update the config template in `bsafe/config.py` (`generate_default_config()`) to match.
 
 ## Privacy
 
