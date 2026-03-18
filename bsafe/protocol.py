@@ -114,34 +114,35 @@ def parse_censor_payload(
     return display_id, frame_width, frame_height, boxes
 
 
-def pack_cmd_censor_style(blur: float, text: str | None) -> bytes:
+def pack_cmd_censor_style(blur: float, pixels: float = 0.0, text: str | None = None) -> bytes:
     """Pack a CMD_CENSOR_STYLE message.
 
-    Payload: [1B blur_percent (0-100)][2B text_length][text_bytes (UTF-8)]
-    blur_percent=0 means no blur, 100 means full blur.
+    Payload: [2B blur_hundredths][2B pixels_hundredths][2B text_length][text_bytes (UTF-8)]
+    Values are hundredths: 100 = 1.0 (100%), 300 = 3.0x multiplier (max 3.0).
     text_length=0 means no text.
     """
-    # Quantised to 1% steps (uint8 0-100), so e.g. 0.005 and 0.014 both map to 1%.
-    blur_pct = max(0, min(100, round(blur * 100)))
+    blur_pct = max(0, min(300, round(blur * 100)))
+    pixels_pct = max(0, min(300, round(pixels * 100)))
     text_bytes = text.encode("utf-8") if text else b""
-    payload = struct.pack("!BH", blur_pct, len(text_bytes)) + text_bytes
+    payload = struct.pack("!HHH", blur_pct, pixels_pct, len(text_bytes)) + text_bytes
     return pack_message(CMD_CENSOR_STYLE, payload)
 
 
-def parse_censor_style_payload(payload: bytes) -> tuple[float, str | None]:
-    """Parse a CMD_CENSOR_STYLE payload. Returns (blur, text).
+def parse_censor_style_payload(payload: bytes) -> tuple[float, float, str | None]:
+    """Parse a CMD_CENSOR_STYLE payload. Returns (blur, pixels, text).
 
-    blur is a float 0.0–1.0 (0.0 = no blur, 1.0 = full blur).
+    blur is a float 0.0–3.0 (1.0 = 100% blur, >1 multiplies effect).
+    pixels is a float 0.0–3.0 (1.0 = 100% pixelation, >1 multiplies effect).
     """
-    if len(payload) < 3:
-        raise ValueError(f"Censor style payload too short: {len(payload)} < 3")
-    blur_pct, text_length = struct.unpack("!BH", payload[:3])
-    if len(payload) < 3 + text_length:
+    if len(payload) < 6:
+        raise ValueError(f"Censor style payload too short: {len(payload)} < 6")
+    blur_pct, pixels_pct, text_length = struct.unpack("!HHH", payload[:6])
+    if len(payload) < 6 + text_length:
         raise ValueError(
-            f"Censor style payload too short for text: {len(payload)} < {3 + text_length}"
+            f"Censor style payload too short for text: {len(payload)} < {6 + text_length}"
         )
-    text = payload[3 : 3 + text_length].decode("utf-8") if text_length > 0 else None
-    return blur_pct / 100.0, text
+    text = payload[6 : 6 + text_length].decode("utf-8") if text_length > 0 else None
+    return blur_pct / 100.0, pixels_pct / 100.0, text
 
 
 def pack_cmd_start(fps: int) -> bytes:

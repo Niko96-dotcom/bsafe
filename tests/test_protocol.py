@@ -190,8 +190,9 @@ def test_censor_style_round_trip_blur_and_text():
     raw = pack_cmd_censor_style(blur=1.0, text="BLOCKED")
     msg_type, payload = read_message(_make_recv(raw))
     assert msg_type == CMD_CENSOR_STYLE
-    blur, text = parse_censor_style_payload(payload)
+    blur, pixels, text = parse_censor_style_payload(payload)
     assert blur == 1.0
+    assert pixels == 0.0
     assert text == "BLOCKED"
 
 
@@ -199,41 +200,85 @@ def test_censor_style_round_trip_no_blur_no_text():
     raw = pack_cmd_censor_style(blur=0.0, text=None)
     msg_type, payload = read_message(_make_recv(raw))
     assert msg_type == CMD_CENSOR_STYLE
-    blur, text = parse_censor_style_payload(payload)
+    blur, pixels, text = parse_censor_style_payload(payload)
     assert blur == 0.0
+    assert pixels == 0.0
     assert text is None
 
 
 def test_censor_style_round_trip_blur_only():
     raw = pack_cmd_censor_style(blur=1.0, text=None)
     _, payload = read_message(_make_recv(raw))
-    blur, text = parse_censor_style_payload(payload)
+    blur, pixels, text = parse_censor_style_payload(payload)
     assert blur == 1.0
+    assert pixels == 0.0
     assert text is None
 
 
 def test_censor_style_round_trip_text_only():
     raw = pack_cmd_censor_style(blur=0.0, text="NSFW")
     _, payload = read_message(_make_recv(raw))
-    blur, text = parse_censor_style_payload(payload)
+    blur, pixels, text = parse_censor_style_payload(payload)
     assert blur == 0.0
+    assert pixels == 0.0
     assert text == "NSFW"
 
 
 def test_censor_style_partial_blur():
     raw = pack_cmd_censor_style(blur=0.3, text=None)
     _, payload = read_message(_make_recv(raw))
-    blur, text = parse_censor_style_payload(payload)
+    blur, pixels, text = parse_censor_style_payload(payload)
     assert blur == 0.30
+    assert pixels == 0.0
     assert text is None
 
 
 def test_censor_style_unicode_text():
     raw = pack_cmd_censor_style(blur=1.0, text="🚫禁止")
     _, payload = read_message(_make_recv(raw))
-    blur, text = parse_censor_style_payload(payload)
+    blur, pixels, text = parse_censor_style_payload(payload)
     assert blur == 1.0
+    assert pixels == 0.0
     assert text == "🚫禁止"
+
+
+def test_censor_style_pixels_only():
+    raw = pack_cmd_censor_style(blur=0.0, pixels=0.8, text=None)
+    msg_type, payload = read_message(_make_recv(raw))
+    assert msg_type == CMD_CENSOR_STYLE
+    blur, pixels, text = parse_censor_style_payload(payload)
+    assert blur == 0.0
+    assert pixels == 0.8
+    assert text is None
+
+
+def test_censor_style_pixels_with_text():
+    raw = pack_cmd_censor_style(blur=0.0, pixels=1.0, text="CENSORED")
+    _, payload = read_message(_make_recv(raw))
+    blur, pixels, text = parse_censor_style_payload(payload)
+    assert blur == 0.0
+    assert pixels == 1.0
+    assert text == "CENSORED"
+
+
+def test_censor_style_high_intensity():
+    """Values >1.0 should round-trip correctly up to 3.0."""
+    raw = pack_cmd_censor_style(blur=2.5, pixels=3.0, text=None)
+    _, payload = read_message(_make_recv(raw))
+    blur, pixels, text = parse_censor_style_payload(payload)
+    assert blur == 2.5
+    assert pixels == 3.0
+    assert text is None
+
+
+def test_censor_style_clamps_above_max():
+    """Values >3.0 should be clamped to 3.0."""
+    raw = pack_cmd_censor_style(blur=5.0, pixels=10.0, text=None)
+    _, payload = read_message(_make_recv(raw))
+    blur, pixels, text = parse_censor_style_payload(payload)
+    assert blur == 3.0
+    assert pixels == 3.0
+    assert text is None
 
 
 def test_parse_censor_style_payload_too_short():

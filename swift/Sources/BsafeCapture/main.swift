@@ -132,6 +132,7 @@ app.setActivationPolicy(.accessory)
 // Censor style config (set by CMD_CENSOR_STYLE from Python).
 // Protected by censorStyleLock — written on the IPC thread, read when building overlay updates.
 var censorBlur: Double = 0.0
+var censorPixels: Double = 0.0
 var censorText: String? = nil
 let censorStyleLock = NSLock()
 
@@ -215,28 +216,31 @@ DispatchQueue.global().async {
                 if let overlay {
                     censorStyleLock.lock()
                     let blur = censorBlur
+                    let pixels = censorPixels
                     let text = censorText
                     censorStyleLock.unlock()
-                    overlay.updateBoxes(censor.boxes, frameWidth: censor.frameWidth, frameHeight: censor.frameHeight, blur: blur, text: text)
+                    overlay.updateBoxes(censor.boxes, frameWidth: censor.frameWidth, frameHeight: censor.frameHeight, blur: blur, pixels: pixels, text: text)
                 } else {
                     fputs("BsafeCapture: no overlay for display \(censor.displayID), skipping censor\n", stderr)
                 }
             case 0x21:  // CMD_CENSOR_STYLE
-                guard payload.count >= 3 else {
+                guard payload.count >= 6 else {
                     fputs("BsafeCapture: CMD_CENSOR_STYLE payload too short\n", stderr)
                     continue
                 }
-                let blurPct = payload[0]
-                let textLength = payload.withUnsafeBytes { $0.load(fromByteOffset: 1, as: UInt16.self).bigEndian }
+                let blurPct = payload.withUnsafeBytes { $0.load(fromByteOffset: 0, as: UInt16.self).bigEndian }
+                let pixelsPct = payload.withUnsafeBytes { $0.load(fromByteOffset: 2, as: UInt16.self).bigEndian }
+                let textLength = payload.withUnsafeBytes { $0.load(fromByteOffset: 4, as: UInt16.self).bigEndian }
                 censorStyleLock.lock()
                 censorBlur = Double(blurPct) / 100.0
-                if textLength > 0, payload.count >= 3 + Int(textLength) {
-                    censorText = String(data: payload[3..<(3 + Int(textLength))], encoding: .utf8)
+                censorPixels = Double(pixelsPct) / 100.0
+                if textLength > 0, payload.count >= 6 + Int(textLength) {
+                    censorText = String(data: payload[6..<(6 + Int(textLength))], encoding: .utf8)
                 } else {
                     censorText = nil
                 }
                 censorStyleLock.unlock()
-                print("BsafeCapture: censor style updated — blur=\(censorBlur), text=\(censorText ?? "none")")
+                print("BsafeCapture: censor style updated — blur=\(censorBlur), pixels=\(censorPixels), text=\(censorText ?? "none")")
             case 0xFF:  // CMD_SHUTDOWN
                 print("BsafeCapture: received shutdown command")
                 capture.stop()

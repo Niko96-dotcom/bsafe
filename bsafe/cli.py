@@ -47,8 +47,14 @@ def cmd_start(args):
     if not (0.0 <= args.smooth_alpha <= 1.0):
         print("Error: --smooth-alpha must be between 0.0 and 1.0", file=sys.stderr)
         sys.exit(1)
-    if not (0.0 <= args.blur <= 1.0):
-        print("Error: --blur must be between 0.0 and 1.0", file=sys.stderr)
+    if not (0.0 <= args.blur <= 3.0):
+        print("Error: --blur must be between 0.0 and 3.0", file=sys.stderr)
+        sys.exit(1)
+    if not (0.0 <= args.pixels <= 3.0):
+        print("Error: --pixels must be between 0.0 and 3.0", file=sys.stderr)
+        sys.exit(1)
+    if args.blur > 0.0 and args.pixels > 0.0:
+        print("Error: --blur and --pixels are mutually exclusive", file=sys.stderr)
         sys.exit(1)
     socket_path = os.path.join(tempfile.gettempdir(), f"bsafe-{os.getpid()}.sock")
 
@@ -61,7 +67,9 @@ def cmd_start(args):
     detector = Detector(min_confidence=args.confidence)
 
     # Start IPC server
-    server = FrameServer(socket_path, fps=fps, blur=args.blur, censor_text=args.censor_text)
+    server = FrameServer(
+        socket_path, fps=fps, blur=args.blur, pixels=args.pixels, censor_text=args.censor_text
+    )
     server.start()
 
     # Spawn Swift helper
@@ -266,7 +274,15 @@ def main():
         type=float,
         const=1.0,
         default=0.0,
-        help="Use blur instead of black rectangle; optional intensity 0.0-1.0 (default: 1.0)",
+        help="Use blur instead of black rectangle; 1.0 = 100%% blur, >1 multiplies effect (default: 1.0)",
+    )
+    start_parser.add_argument(
+        "--pixels",
+        nargs="?",
+        type=float,
+        const=1.0,
+        default=0.0,
+        help="Use pixelation instead of black rectangle; 1.0 = 100%% pixelation, >1 multiplies effect (default: 1.0)",
     )
     start_parser.add_argument(
         "--censor-text",

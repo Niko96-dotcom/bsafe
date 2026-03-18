@@ -29,11 +29,13 @@ class FrameServer:
         fps: int = 45,
         maxsize: int = 10,
         blur: float = 0.0,
+        pixels: float = 0.0,
         censor_text: str | None = None,
     ):
         self.socket_path = socket_path
         self.fps = fps
         self.blur = blur
+        self.pixels = pixels
         self.censor_text = censor_text
         self.frame_queue: queue.Queue = queue.Queue(maxsize=maxsize)
         self._sock: socket.socket | None = None
@@ -67,9 +69,11 @@ class FrameServer:
             # Send CMD_START with desired FPS
             self._send_to_client(pack_cmd_start(self.fps))
 
-            # Send censor style config if blur or text is set
-            if self.blur > 0.0 or self.censor_text is not None:
-                self._send_to_client(pack_cmd_censor_style(self.blur, self.censor_text))
+            # Send censor style config if blur, pixels, or text is set
+            if self.blur > 0.0 or self.pixels > 0.0 or self.censor_text is not None:
+                self._send_to_client(
+                    pack_cmd_censor_style(self.blur, self.pixels, self.censor_text)
+                )
 
             # Read frames
             recv_fn = self._client.recv
