@@ -68,6 +68,12 @@ def _add_censor_args(parser):
         action="store_true",
         help="Expand censor area by 3x (9x area)",
     )
+    parser.add_argument(
+        "--model",
+        choices=["320n", "640m"],
+        default=None,
+        help="Detection model: '320n' (default, fast) or '640m' (accurate, requires download)",
+    )
     parser.add_argument("-v", "--verbose", action="store_true", help="Verbose logging")
 
 
@@ -129,7 +135,7 @@ def cmd_start(args):
 
     # Initialize detector
     print("Loading NudeNet model...", flush=True)
-    detector = Detector(min_confidence=args.confidence)
+    detector = Detector(min_confidence=args.confidence, model=args.model)
 
     # Start IPC server
     server = FrameServer(
@@ -209,6 +215,7 @@ def cmd_video(args):
             censor_text=args.censor_text,
             full_censor=args.full_censor,
             fps_override=args.fps,
+            model=args.model,
             verbose=args.verbose,
         )
     except (FileNotFoundError, ValueError, RuntimeError) as e:
@@ -240,6 +247,11 @@ def cmd_bootstrap(args):
         print("Error: Swift build failed", file=sys.stderr)
         sys.exit(1)
     print("Swift helper OK\n")
+
+    # Step 3: Ensure models directory exists
+    models_dir = os.path.expanduser("~/.bsafe/models")
+    os.makedirs(models_dir, exist_ok=True)
+    print(f"Models directory: {models_dir} OK\n")
 
     print("Bootstrap complete! Run 'bsafe doctor' to verify.")
     _print_alias_hint()

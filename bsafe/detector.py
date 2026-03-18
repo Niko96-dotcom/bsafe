@@ -7,6 +7,42 @@ from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
+KNOWN_MODELS: dict[str, str | None] = {
+    "320n": None,  # bundled with nudenet
+    "640m": "~/.bsafe/models/640m.onnx",
+}
+
+_640M_DOWNLOAD_URL = (
+    "https://github.com/notAI-tech/NudeNet/releases/download/v3.4-weights/640m.onnx"
+)
+
+
+def resolve_model(name: str | None) -> str | None:
+    """Resolve a model name to a path (or None for the bundled default).
+
+    Raises ValueError for unknown names or missing model files.
+    """
+    if name is None or name == "320n":
+        return None
+
+    if name not in KNOWN_MODELS:
+        raise ValueError(
+            f"unknown model '{name}'. Known models: {', '.join(sorted(KNOWN_MODELS))}"
+        )
+
+    raw_path = KNOWN_MODELS[name]
+    assert raw_path is not None
+    path = os.path.expanduser(raw_path)
+
+    if not os.path.isfile(path):
+        raise ValueError(
+            f"model file not found: {path}\n"
+            f"Download it with:\n"
+            f"  mkdir -p ~/.bsafe/models && curl -Lo {path} {_640M_DOWNLOAD_URL}"
+        )
+
+    return path
+
 
 @dataclass(frozen=True, slots=True)
 class Detection:
@@ -18,16 +54,17 @@ class Detection:
 class Detector:
     """Wraps NudeDetector for JPEG bytes → detections."""
 
-    def __init__(self, min_confidence: float = 0.5):
+    def __init__(self, min_confidence: float = 0.5, model: str | None = None):
         from nudenet import NudeDetector
 
         self.min_confidence = min_confidence
-        self._detector = NudeDetector()
+        model_path = resolve_model(model)
+        self._detector = NudeDetector(model_path=model_path) if model_path else NudeDetector()
         # Reusable temp file to avoid create/delete churn at capture FPS
         tmp = tempfile.NamedTemporaryFile(suffix=".jpg", prefix="bsafe-det-", delete=False)
         self._tmp_path = tmp.name
         tmp.close()
-        logger.info("NudeNet detector initialized")
+        logger.info("NudeNet detector initialized (model=%s)", model or "320n")
 
     def close(self):
         try:

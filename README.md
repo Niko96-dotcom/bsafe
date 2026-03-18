@@ -60,6 +60,7 @@ Shared flags (work with both `start` and `video`):
 - `--blur [N]` — blur effect (default intensity: 1.0)
 - `--pixels [N]` — pixelation effect (default intensity: 1.0)
 - `--censor-text [TEXT]` — overlay text on censored regions (default: "NSFW")
+- `--model {320n,640m}` — detection model (default: `320n`, fast). `640m` is more accurate but requires a manual download (see below)
 - `--full-censor` — expand censor area by 3x
 - `-v` / `--verbose` — enable debug logging
 
@@ -71,6 +72,23 @@ Shared flags (work with both `start` and `video`):
 `video`-only flags:
 
 - `--fps N` — detection FPS override (default: native video FPS)
+
+### Using the 640m model
+
+The default `320n` model is fast but less accurate. For better detection, download the `640m` model:
+
+```sh
+mkdir -p ~/.bsafe/models
+curl -Lo ~/.bsafe/models/640m.onnx \
+  https://github.com/notAI-tech/NudeNet/releases/download/v3.4-weights/640m.onnx
+```
+
+Then pass `--model 640m`:
+
+```sh
+bsafe start --model 640m
+bsafe video clip.mp4 --model 640m
+```
 
 ## License
 

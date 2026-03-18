@@ -48,6 +48,7 @@ def process_video(
     censor_text: str | None = None,
     full_censor: bool = False,
     fps_override: int | None = None,
+    model: str | None = None,
     verbose: bool = False,
 ) -> str:
     """Process a video file and write a censored copy.
@@ -96,7 +97,7 @@ def process_video(
 
     # Init detector and tracker
     print("Loading NudeNet model...", flush=True)
-    detector = Detector(min_confidence=confidence)
+    detector = Detector(min_confidence=confidence, model=model)
     censor_classes = CENSOR_PRESETS[censor]
     tracker = BoxTracker(persist_frames=persist_frames, smooth_alpha=smooth_alpha)
 
