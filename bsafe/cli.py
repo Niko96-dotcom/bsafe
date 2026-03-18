@@ -11,6 +11,85 @@ import time
 logger = logging.getLogger(__name__)
 
 
+def _add_censor_args(parser):
+    """Add shared censor flags to a subcommand parser."""
+    parser.add_argument(
+        "--confidence", type=float, default=0.0, help="Min detection confidence (default: 0.0)"
+    )
+    parser.add_argument(
+        "--censor",
+        choices=["female", "male", "all"],
+        default="all",
+        help="What to censor: female, male, or all (default: all)",
+    )
+    parser.add_argument(
+        "--padding",
+        type=float,
+        default=0.0,
+        help="Box expansion fraction (default: 0.0)",
+    )
+    parser.add_argument(
+        "--persist-frames",
+        type=int,
+        default=8,
+        help="Frames a box persists after disappearing (default: 8)",
+    )
+    parser.add_argument(
+        "--smooth-alpha",
+        type=float,
+        default=0.5,
+        help="EMA weight for box position smoothing, 0.0-1.0 (default: 0.5)",
+    )
+    parser.add_argument(
+        "--blur",
+        nargs="?",
+        type=float,
+        const=1.0,
+        default=0.0,
+        help="Use blur instead of black rectangle; 1.0 = 100%% blur, >1 multiplies effect (default: 1.0)",
+    )
+    parser.add_argument(
+        "--pixels",
+        nargs="?",
+        type=float,
+        const=1.0,
+        default=0.0,
+        help="Use pixelation instead of black rectangle; 1.0 = 100%% pixelation, >1 multiplies effect (default: 1.0)",
+    )
+    parser.add_argument(
+        "--censor-text",
+        nargs="?",
+        const="NSFW",
+        default=None,
+        help='Show text on censored region (default: "NSFW" if flag present with no value)',
+    )
+    parser.add_argument(
+        "--full-censor",
+        action="store_true",
+        help="Expand censor area by 3x (9x area)",
+    )
+    parser.add_argument("-v", "--verbose", action="store_true", help="Verbose logging")
+
+
+def _validate_censor_args(args):
+    """Validate shared censor arguments. Exits on error."""
+    if args.padding < 0:
+        print("Error: --padding must be >= 0", file=sys.stderr)
+        sys.exit(1)
+    if not (0.0 <= args.smooth_alpha <= 1.0):
+        print("Error: --smooth-alpha must be between 0.0 and 1.0", file=sys.stderr)
+        sys.exit(1)
+    if not (0.0 <= args.blur <= 3.0):
+        print("Error: --blur must be between 0.0 and 3.0", file=sys.stderr)
+        sys.exit(1)
+    if not (0.0 <= args.pixels <= 3.0):
+        print("Error: --pixels must be between 0.0 and 3.0", file=sys.stderr)
+        sys.exit(1)
+    if args.blur > 0.0 and args.pixels > 0.0:
+        print("Error: --blur and --pixels are mutually exclusive", file=sys.stderr)
+        sys.exit(1)
+
+
 def cmd_start(args):
     if args.dry_run:
         stop = False
@@ -41,21 +120,7 @@ def cmd_start(args):
     if fps < 1 or fps > 255:
         print("Error: --fps must be between 1 and 255", file=sys.stderr)
         sys.exit(1)
-    if args.padding < 0:
-        print("Error: --padding must be >= 0", file=sys.stderr)
-        sys.exit(1)
-    if not (0.0 <= args.smooth_alpha <= 1.0):
-        print("Error: --smooth-alpha must be between 0.0 and 1.0", file=sys.stderr)
-        sys.exit(1)
-    if not (0.0 <= args.blur <= 3.0):
-        print("Error: --blur must be between 0.0 and 3.0", file=sys.stderr)
-        sys.exit(1)
-    if not (0.0 <= args.pixels <= 3.0):
-        print("Error: --pixels must be between 0.0 and 3.0", file=sys.stderr)
-        sys.exit(1)
-    if args.blur > 0.0 and args.pixels > 0.0:
-        print("Error: --blur and --pixels are mutually exclusive", file=sys.stderr)
-        sys.exit(1)
+    _validate_censor_args(args)
     socket_path = os.path.join(tempfile.gettempdir(), f"bsafe-{os.getpid()}.sock")
 
     censor_classes = CENSOR_PRESETS[args.censor]
@@ -124,6 +189,31 @@ def cmd_start(args):
                 helper.kill()
                 helper.wait()
         print("Stopped.")
+
+
+def cmd_video(args):
+    _validate_censor_args(args)
+
+    from bsafe.video import process_video
+
+    try:
+        process_video(
+            args.input,
+            confidence=args.confidence,
+            censor=args.censor,
+            padding=args.padding,
+            persist_frames=args.persist_frames,
+            smooth_alpha=args.smooth_alpha,
+            blur=args.blur,
+            pixels=args.pixels,
+            censor_text=args.censor_text,
+            full_censor=args.full_censor,
+            fps_override=args.fps,
+            verbose=args.verbose,
+        )
+    except (FileNotFoundError, ValueError, RuntimeError) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 def cmd_bootstrap(args):
@@ -237,69 +327,23 @@ def main():
     parser = argparse.ArgumentParser(prog="bsafe", description="Censor NSFW content on screen")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
+    # start subcommand
     start_parser = subparsers.add_parser("start", help="Start the censoring process")
     start_parser.add_argument("--fps", type=int, default=45, help="Capture FPS (default: 45)")
-    # Aggressive default: empirical tests showed confidence 0.0 catches edge cases
-    # that higher thresholds miss, with acceptable false-positive rate for censoring
-    start_parser.add_argument(
-        "--confidence", type=float, default=0.0, help="Min detection confidence (default: 0.0)"
-    )
-    start_parser.add_argument(
-        "--censor",
-        choices=["female", "male", "all"],
-        default="all",
-        help="What to censor: female, male, or all (default: all)",
-    )
-    start_parser.add_argument(
-        "--padding",
-        type=float,
-        default=0.0,
-        help="Box expansion fraction (default: 0.0)",
-    )
-    start_parser.add_argument(
-        "--persist-frames",
-        type=int,
-        default=8,
-        help="Frames a box persists after disappearing (default: 8)",
-    )
-    start_parser.add_argument(
-        "--smooth-alpha",
-        type=float,
-        default=0.5,
-        help="EMA weight for box position smoothing, 0.0-1.0 (default: 0.5)",
-    )
-    start_parser.add_argument(
-        "--blur",
-        nargs="?",
-        type=float,
-        const=1.0,
-        default=0.0,
-        help="Use blur instead of black rectangle; 1.0 = 100%% blur, >1 multiplies effect (default: 1.0)",
-    )
-    start_parser.add_argument(
-        "--pixels",
-        nargs="?",
-        type=float,
-        const=1.0,
-        default=0.0,
-        help="Use pixelation instead of black rectangle; 1.0 = 100%% pixelation, >1 multiplies effect (default: 1.0)",
-    )
-    start_parser.add_argument(
-        "--censor-text",
-        nargs="?",
-        const="NSFW",
-        default=None,
-        help='Show text on censored region (default: "NSFW" if flag present with no value)',
-    )
-    start_parser.add_argument(
-        "--full-censor",
-        action="store_true",
-        help="Expand censor area by 3x (9x area)",
-    )
+    _add_censor_args(start_parser)
     start_parser.add_argument(
         "--dry-run", action="store_true", help="Run without Swift helper or detector"
     )
-    start_parser.add_argument("-v", "--verbose", action="store_true", help="Verbose logging")
+
+    # video subcommand
+    video_parser = subparsers.add_parser(
+        "video", help="Process a video file and output a censored copy"
+    )
+    video_parser.add_argument("input", help="Path to video file (.mp4, .m4v, .mov)")
+    video_parser.add_argument(
+        "--fps", type=int, default=None, help="Detection FPS override (default: native)"
+    )
+    _add_censor_args(video_parser)
 
     subparsers.add_parser("doctor", help="Check system requirements")
     subparsers.add_parser("bootstrap", help="Install dependencies and build Swift helper")
@@ -315,6 +359,7 @@ def main():
         "start": cmd_start,
         "doctor": cmd_doctor,
         "bootstrap": cmd_bootstrap,
+        "video": cmd_video,
     }
 
     commands[args.command](args)
