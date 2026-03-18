@@ -23,6 +23,18 @@ logger = logging.getLogger(__name__)
 SUPPORTED_EXTENSIONS = {".mp4", ".m4v", ".mov"}
 
 
+def _fmt_duration(seconds: float) -> str:
+    """Format seconds into a human-readable duration string."""
+    s = int(seconds)
+    if s < 60:
+        return f"{s}s"
+    m, s = divmod(s, 60)
+    if m < 60:
+        return f"{m}m{s:02d}s"
+    h, m = divmod(m, 60)
+    return f"{h}h{m:02d}m{s:02d}s"
+
+
 def process_video(
     input_path: str,
     *,
@@ -138,16 +150,21 @@ def process_video(
                 fps_actual = frame_idx / elapsed if elapsed > 0 else 0
                 pct = frame_idx / total_frames * 100
                 remaining = (total_frames - frame_idx) / fps_actual if fps_actual > 0 else 0
+                eta = _fmt_duration(remaining)
                 print(
                     f"\r  Frame {frame_idx}/{total_frames} ({pct:.0f}%) — "
-                    f"{fps_actual:.1f} FPS — ETA {remaining:.0f}s",
+                    f"{fps_actual:.1f} FPS — ETA {eta}",
                     end="",
                     flush=True,
                 )
                 last_progress = now
 
         processing_ok = True
+    except Exception as exc:
+        print(f"\n  Error at frame {frame_idx}: {exc}", flush=True)
+        raise
     finally:
+        print(flush=True)  # newline after \r progress
         cap.release()
         writer.release()
         detector.close()
@@ -159,7 +176,7 @@ def process_video(
                 pass
 
     elapsed = time.monotonic() - t_start
-    print(f"\n  Processed {frame_idx} frames in {elapsed:.1f}s")
+    print(f"\n  Processed {frame_idx} frames in {_fmt_duration(elapsed)}")
 
     # Mux audio with ffmpeg
     _mux_audio(tmp_path, input_path, output_path)
@@ -188,7 +205,11 @@ def _mux_audio(tmp_path: str, input_path: str, output_path: str) -> None:
                 "-i",
                 input_path,
                 "-c:v",
-                "copy",
+                "libx264",
+                "-preset",
+                "fast",
+                "-crf",
+                "18",
                 "-c:a",
                 "aac",
                 "-map",
@@ -201,7 +222,7 @@ def _mux_audio(tmp_path: str, input_path: str, output_path: str) -> None:
             ],
             capture_output=True,
             text=True,
-            timeout=300,
+            timeout=600,
         )
         if result.returncode != 0:
             logger.warning(
