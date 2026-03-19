@@ -3,12 +3,14 @@ import ScreenCaptureKit
 
 class ScreenCapture: NSObject, SCStreamDelegate {
     let fps: Int
+    let displayFilter: String?
     var onFrame: ((CGImage, UInt32, TimeInterval) -> Void)?
 
     private var streams: [(displayID: UInt32, stream: SCStream, output: DisplayStreamOutput)] = []
 
-    init(fps: Int) {
+    init(fps: Int, displayFilter: String? = nil) {
         self.fps = fps
+        self.displayFilter = displayFilter
     }
 
     func start() throws {
@@ -31,9 +33,57 @@ class ScreenCapture: NSObject, SCStreamDelegate {
                 return
             }
 
+            // Filter displays based on displayFilter
+            let filteredDisplays: [SCDisplay]
+            let primaryID = CGMainDisplayID()
+            let filter = self.displayFilter ?? "primary"
+
+            switch filter {
+            case "primary":
+                if let primary = content.displays.first(where: { $0.displayID == primaryID }) {
+                    filteredDisplays = [primary]
+                } else {
+                    // No primary found; fall back to first available display
+                    filteredDisplays = [content.displays[0]]  // safe: displays.isEmpty checked above
+                }
+            case "secondary":
+                let nonPrimary = content.displays.filter { $0.displayID != primaryID }
+                guard !nonPrimary.isEmpty else {
+                    startError = NSError(
+                        domain: "BsafeCapture", code: 3,
+                        userInfo: [NSLocalizedDescriptionKey: "No secondary display found"]
+                    )
+                    semaphore.signal()
+                    return
+                }
+                filteredDisplays = [nonPrimary[0]]
+            case "all":
+                filteredDisplays = content.displays
+            default:
+                // Numeric display ID
+                if let numericID = UInt32(filter) {
+                    guard let match = content.displays.first(where: { $0.displayID == numericID }) else {
+                        startError = NSError(
+                            domain: "BsafeCapture", code: 4,
+                            userInfo: [NSLocalizedDescriptionKey: "Display with ID \(filter) not found"]
+                        )
+                        semaphore.signal()
+                        return
+                    }
+                    filteredDisplays = [match]
+                } else {
+                    startError = NSError(
+                        domain: "BsafeCapture", code: 5,
+                        userInfo: [NSLocalizedDescriptionKey: "Invalid display filter: \(filter)"]
+                    )
+                    semaphore.signal()
+                    return
+                }
+            }
+
             let captureGroup = DispatchGroup()
 
-            for display in content.displays {
+            for display in filteredDisplays {
                 let filter = SCContentFilter(display: display, excludingWindows: [])
                 let config = SCStreamConfiguration()
                 config.width = display.width

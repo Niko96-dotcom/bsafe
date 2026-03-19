@@ -33,6 +33,26 @@ Start real-time screen censoring (no daemonized support yet):
 bsafe start
 ```
 
+### Display selection
+
+By default `bsafe start` captures only the **primary** display. Most setups
+have one primary and one secondary display — the aliases `primary` and
+`secondary` are enough to pick either without looking up IDs.
+
+List connected displays:
+
+```sh
+bsafe displays
+```
+
+Target a specific display:
+
+```sh
+bsafe start --display secondary   # first non-primary display
+bsafe start --display 1234567     # by numeric ID (from bsafe displays)
+bsafe start --display all         # all displays (uses more CPU)
+```
+
 ### Process a video file
 
 Produce a censored copy of a local video (the original is never modified):
@@ -84,6 +104,7 @@ Shared flags (work with both `start` and `video`):
 `start`-only flags:
 
 - `--fps N` — capture frames per second (default: 45)
+- `--display VALUE` — display to capture: `primary`, `secondary`, `all`, or numeric ID (default: `primary`)
 - `--dry-run` — run the loop without the Swift helper or detector
 
 `video`-only flags:

@@ -183,7 +183,7 @@ def cmd_start(args):
 
     # Spawn Swift helper
     print("Starting screen capture...", flush=True)
-    helper = spawn_helper(socket_path, fps)
+    helper = spawn_helper(socket_path, fps, display=args.display)
 
     print("Running... press Ctrl+C to stop.", flush=True)
 
@@ -310,6 +310,27 @@ def cmd_image(args):
     except Exception as e:
         print(f"\nError: {e}", file=sys.stderr)
         sys.exit(1)
+
+
+def cmd_displays(args):
+    from bsafe.swift_helper import list_displays
+
+    try:
+        displays = list_displays()
+    except (FileNotFoundError, RuntimeError) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    if not displays:
+        print("No displays found.")
+        return
+
+    print(f"{'ID':<12} {'Resolution':<16} {'Primary'}")
+    print(f"{'─' * 12} {'─' * 16} {'─' * 7}")
+    for d in displays:
+        res = f"{d['width']}x{d['height']}"
+        primary = "yes" if d.get("primary") else "no"
+        print(f"{d['id']:<12} {res:<16} {primary}")
 
 
 def cmd_bootstrap(args):
@@ -457,6 +478,11 @@ def main():
     _add_censor_args(start_parser)
     _add_temporal_args(start_parser)
     start_parser.add_argument(
+        "--display",
+        default="primary",
+        help="Display to capture: primary, secondary, all, or numeric ID (default: primary)",
+    )
+    start_parser.add_argument(
         "--dry-run",
         action=argparse.BooleanOptionalAction,
         default=False,
@@ -490,6 +516,7 @@ def main():
     )
     _add_censor_args(image_parser)
 
+    subparsers.add_parser("displays", help="List connected displays")
     subparsers.add_parser("doctor", help="Check system requirements")
     subparsers.add_parser("bootstrap", help="Install dependencies and build Swift helper")
 
@@ -515,6 +542,7 @@ def main():
 
     commands = {
         "start": cmd_start,
+        "displays": cmd_displays,
         "doctor": cmd_doctor,
         "bootstrap": cmd_bootstrap,
         "video": cmd_video,

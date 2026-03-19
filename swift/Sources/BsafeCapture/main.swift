@@ -4,10 +4,11 @@ import ScreenCaptureKit
 
 // MARK: - Argument parsing
 
-func parseArgs() -> (socketPath: String, fps: Int) {
+func parseArgs() -> (socketPath: String, fps: Int, display: String?) {
     let args = CommandLine.arguments
     var socketPath = ""
     var fps = 3
+    var display: String? = nil
 
     var i = 1
     while i < args.count {
@@ -26,6 +27,13 @@ func parseArgs() -> (socketPath: String, fps: Int) {
                 exit(1)
             }
             fps = f
+        case "--display":
+            i += 1
+            guard i < args.count else {
+                fputs("Error: --display requires a value\n", stderr)
+                exit(1)
+            }
+            display = args[i]
         default:
             fputs("Unknown argument: \(args[i])\n", stderr)
             exit(1)
@@ -38,7 +46,7 @@ func parseArgs() -> (socketPath: String, fps: Int) {
         exit(1)
     }
 
-    return (socketPath, fps)
+    return (socketPath, fps, display)
 }
 
 // MARK: - Censor payload parsing
@@ -88,11 +96,59 @@ if CommandLine.arguments.contains("--check-permission") {
     exit(ok ? 0 : 1)
 }
 
+// MARK: - List displays (early exit)
+
+if CommandLine.arguments.contains("--list-displays") {
+    // Consume --list-displays and reject unknown flags
+    let knownFlags: Set<String> = ["--list-displays"]
+    for arg in CommandLine.arguments.dropFirst() {
+        if !knownFlags.contains(arg) {
+            fputs("Error: unexpected argument with --list-displays: \(arg)\n", stderr)
+            exit(1)
+        }
+    }
+
+    let semaphore = DispatchSemaphore(value: 0)
+
+    SCShareableContent.getExcludingDesktopWindows(false, onScreenWindowsOnly: true) { content, error in
+        if let error {
+            fputs("Error: \(error.localizedDescription)\n", stderr)
+            semaphore.signal()
+            return
+        }
+
+        guard let content else {
+            fputs("Error: no shareable content\n", stderr)
+            semaphore.signal()
+            return
+        }
+
+        let primaryID = CGMainDisplayID()
+        for display in content.displays {
+            let isPrimary = display.displayID == primaryID
+            let entry: [String: Any] = [
+                "id": display.displayID,
+                "width": display.width,
+                "height": display.height,
+                "primary": isPrimary,
+            ]
+            if let data = try? JSONSerialization.data(withJSONObject: entry),
+               let json = String(data: data, encoding: .utf8) {
+                print(json)
+            }
+        }
+        semaphore.signal()
+    }
+
+    semaphore.wait()
+    exit(0)
+}
+
 // MARK: - Main
 
-let (socketPath, requestedFps) = parseArgs()
+let (socketPath, requestedFps, displayArg) = parseArgs()
 
-print("BsafeCapture: connecting to \(socketPath), requested FPS=\(requestedFps)")
+print("BsafeCapture: connecting to \(socketPath), requested FPS=\(requestedFps), display=\(displayArg ?? "primary")")
 
 let client = SocketClient(path: socketPath)
 
@@ -140,7 +196,7 @@ let censorStyleLock = NSLock()
 var overlays: [UInt32: CensorOverlay] = [:]
 let overlaysLock = NSLock()
 
-let capture = ScreenCapture(fps: fps)
+let capture = ScreenCapture(fps: fps, displayFilter: displayArg)
 
 // JPEG quality matters for detection accuracy — 0.9 was validated empirically but
 // 0.7 may be a good bandwidth/accuracy tradeoff. Test and adjust if needed.

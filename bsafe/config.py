@@ -4,7 +4,7 @@ import tomllib
 CONFIG_PATH = os.path.expanduser("~/.config/bsafe/config.toml")
 
 VALID_KEYS = {
-    "start": {"fps", "dry_run"},
+    "start": {"fps", "dry_run", "display"},
     "video": {"fps", "chunk_frames"},
     "image": set(),
     "common": {
@@ -35,6 +35,7 @@ def generate_default_config() -> str:
 
 [start]
 fps = 45
+display = "primary"
 dry_run = false
 
 [video]

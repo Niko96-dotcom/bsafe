@@ -41,7 +41,33 @@ def find_helper() -> Path | None:
     return None
 
 
-def spawn_helper(socket_path: str, fps: int) -> subprocess.Popen:
+def list_displays() -> list[dict]:
+    """Query the Swift helper for connected displays."""
+    import json
+
+    helper = find_helper()
+    if helper is None:
+        raise FileNotFoundError(
+            f"Swift helper '{HELPER_NAME}' not found. "
+            "Build it with: cd swift && swift build -c release"
+        )
+    result = subprocess.run(
+        [str(helper), "--list-displays"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"Failed to list displays: {result.stderr.strip()}")
+    # Output is JSONL: one JSON object per line.
+    displays = []
+    for line in result.stdout.strip().splitlines():
+        if line:
+            displays.append(json.loads(line))
+    return displays
+
+
+def spawn_helper(socket_path: str, fps: int, display: str = "primary") -> subprocess.Popen:
     """Spawn the Swift helper, pointing it at our socket."""
     helper = find_helper()
     if helper is None:
@@ -51,8 +77,12 @@ def spawn_helper(socket_path: str, fps: int) -> subprocess.Popen:
         )
     logger.info("Spawning Swift helper: %s", helper)
     verbose = logger.isEnabledFor(logging.DEBUG)
+    cmd = [str(helper), "--socket", socket_path, "--fps", str(fps)]
+    # Always pass --display explicitly to avoid relying on Swift's implicit default.
+    if display:
+        cmd.extend(["--display", display])
     return subprocess.Popen(
-        [str(helper), "--socket", socket_path, "--fps", str(fps)],
+        cmd,
         stdout=None if verbose else subprocess.PIPE,
         stderr=None if verbose else subprocess.PIPE,
     )
