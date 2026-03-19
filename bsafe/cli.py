@@ -156,6 +156,39 @@ def _warn_erax_unsupported(args):
             )
 
 
+def _print_config(args):
+    """Print active censor configuration as a sanity check."""
+    if args.censor_text:
+        censor_method = f"text ({args.censor_text})"
+    elif args.blur:
+        censor_method = f"blur ({args.blur})"
+    elif args.pixels:
+        censor_method = f"pixels ({args.pixels})"
+    else:
+        censor_method = "bar"
+    parts = [
+        f"model={args.model or '320n'}",
+        f"confidence={args.confidence}",
+        f"censor={args.censor}",
+        f"method={censor_method}",
+        f"padding={args.padding}",
+    ]
+    extras = [
+        name
+        for name, enabled in [
+            ("covered", args.covered),
+            ("face_male", args.face_male),
+            ("face_female", args.face_female),
+            ("feet", args.feet),
+            ("full_censor", args.full_censor),
+        ]
+        if enabled
+    ]
+    if extras:
+        parts.append(f"extras={','.join(extras)}")
+    print(f"Config: {', '.join(parts)}", flush=True)
+
+
 def cmd_start(args):
     if args.dry_run:
         stop = False
@@ -202,6 +235,8 @@ def cmd_start(args):
 
     # Warn about unsupported flags with EraX
     _warn_erax_unsupported(args)
+
+    _print_config(args)
 
     # Initialize detector
     print(f"Loading model {args.model or '320n'}...", flush=True)
@@ -271,6 +306,7 @@ def cmd_video(args):
     _validate_censor_args(args)
     _resolve_confidence(args)
     _warn_erax_unsupported(args)
+    _print_config(args)
 
     from bsafe.censor import CensorConfig
     from bsafe.video import process_video
@@ -314,6 +350,7 @@ def cmd_image(args):
     _validate_censor_args(args)
     _resolve_confidence(args)
     _warn_erax_unsupported(args)
+    _print_config(args)
 
     from bsafe.censor import CensorConfig
     from bsafe.image import process_image
