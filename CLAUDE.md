@@ -12,6 +12,10 @@
 - Keep `CLAUDE.md` updated when adding conventions, entry points, or architectural decisions.
 - When adding or changing CLI flags/defaults, update the config template in `bsafe/config.py` (`generate_default_config()`) to match.
 
+## Detection backends
+
+`bsafe/detector.py` uses a backend abstraction: `_NudeNetBackend` (NudeNet ONNX models) and `_EraXBackend` (ultralytics YOLO `.pt` models). `Detector` delegates to the correct backend based on `ModelInfo.backend`. `ultralytics` is an optional dependency — install with `uv sync --extra erax`. EraX class names are mapped to NudeNet canonical names so `censor.py` works unchanged.
+
 ## Before committing
 
 Always run all CI checks locally **before** every commit — format, lint, and tests. Fix any issues before committing. Do not prompt the user to commit; wait for them to ask.

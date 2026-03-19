@@ -53,6 +53,11 @@ bsafe start --display 1234567     # by numeric ID (from bsafe displays)
 bsafe start --display all         # all displays (uses more CPU)
 ```
 
+There are bottlenecks. If you try to support a lot of displays/monitors, in high resolution,
+with lots of NSFW content...
+the more you increase even one of these factors, the more quality will be compromised, remember you
+are processing video inputs and rendering video outputs in real time, this is heavy work.
+
 ### Process a video file
 
 Produce a censored copy of a local video (the original is never modified):
@@ -85,7 +90,7 @@ Sections: `[start]` for start-only flags, `[video]` for video-only flags,
 
 Shared flags (work with both `start` and `video`):
 
-- `--confidence N` — minimum detection confidence, 0.0–1.0 (default: 0.0)
+- `--confidence N` — minimum detection confidence, 0.0–1.0 (default: 0.0 for NudeNet, 0.3 for EraX)
 - `--censor {female,male,all}` — what to censor (default: all)
 - `--padding N` — box expansion fraction (default: 0.0)
 - `--persist-frames N` — frames a box persists after disappearing (default: 8)
@@ -93,7 +98,7 @@ Shared flags (work with both `start` and `video`):
 - `--blur [N]` — blur effect (default intensity: 1.0)
 - `--pixels [N]` — pixelation effect (default intensity: 1.0)
 - `--censor-text [TEXT]` — overlay text on censored regions (default: "NSFW")
-- `--model {320n,640m}` — detection model (default: `320n`, fast). `640m` is more accurate but requires a manual download (see below)
+- `--model {320n,640m,erax-nano,erax-small,erax-medium}` — detection model (default: `320n`). See model details below
 - `--covered` — also censor covered body parts (anus, buttocks; breasts when `--censor` is `female` or `all`)
 - `--face-male` — also censor male faces
 - `--face-female` — also censor female faces
@@ -112,21 +117,68 @@ Shared flags (work with both `start` and `video`):
 - `--fps N` — detection FPS override (default: native video FPS)
 - `--chunk-frames N` — frames per processing chunk (default: 5000). Smaller chunks use less memory but may cause brief tracking gaps at chunk boundaries.
 
-### Using the 640m model
+### Detection models
 
-The default `320n` model is fast but less accurate. For better detection, download the `640m` model:
+The default `320n` model is bundled with NudeNet. Other models require a manual download.
+
+| Model | Backend | Size | Notes |
+|-------|---------|------|-------|
+| `320n` | NudeNet | bundled | Fast, default |
+| `640m` | NudeNet | ~90 MB | More accurate |
+| `erax-nano` | EraX YOLO | ~5 MB | Fastest EraX, mAP 0.438 |
+| `erax-small` | EraX YOLO | ~40 MB | Balanced, mAP 0.453 |
+| `erax-medium` | EraX YOLO | ~19 MB | Best EraX accuracy, mAP 0.467 |
+
+NudeNet models have broader coverage, detecting faces, covered parts, and feet.
+EraX models are more targeted/specific, for example detecting nipples specifically.
+
+As for computational efforts, the default NudeNet (`320n`) is lightweight and best for `bsafe start`,
+where keeping a decent FPS matters. EraX models are heavier and will drop frames in real time, but
+work great with `bsafe image` and `bsafe video` where auto FPS removes that constraint.
+
+#### Using the 640m model
 
 ```sh
 mkdir -p ~/.config/bsafe/models
 curl -Lo ~/.config/bsafe/models/640m.onnx \
   https://github.com/notAI-tech/NudeNet/releases/download/v3.4-weights/640m.onnx
+bsafe start --model 640m
 ```
 
-Then pass `--model 640m`:
+#### Using EraX models
+
+EraX models use [ultralytics](https://github.com/ultralytics/ultralytics) YOLO and require an extra dependency:
 
 ```sh
-bsafe start --model 640m
-bsafe video clip.mp4 --model 640m
+uv sync --extra erax
+```
+
+Download a model (e.g. `erax-nano`):
+
+```sh
+mkdir -p ~/.config/bsafe/models
+curl -Lo ~/.config/bsafe/models/erax-anti-nsfw-yolo11n-v1.1.pt \
+  https://huggingface.co/erax-ai/EraX-Anti-NSFW-V1.1/resolve/main/erax-anti-nsfw-yolo11n-v1.1.pt
+```
+
+Other variants:
+
+```sh
+# erax-small
+curl -Lo ~/.config/bsafe/models/erax-anti-nsfw-yolo11s-v1.1.pt \
+  https://huggingface.co/erax-ai/EraX-Anti-NSFW-V1.1/resolve/main/erax-anti-nsfw-yolo11s-v1.1.pt
+
+# erax-medium
+curl -Lo ~/.config/bsafe/models/erax-anti-nsfw-yolo11m-v1.1.pt \
+  https://huggingface.co/erax-ai/EraX-Anti-NSFW-V1.1/resolve/main/erax-anti-nsfw-yolo11m-v1.1.pt
+```
+
+Then use with `--model`:
+
+```sh
+bsafe start --model erax-nano
+bsafe image photo.jpg --model erax-small
+bsafe video clip.mp4 --model erax-medium
 ```
 
 ## License

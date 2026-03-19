@@ -8,6 +8,9 @@ dependencies = ["nudenet", "opencv-python-headless"]
 [project.scripts]
 bsafe = "bsafe.cli:main"
 
+[project.optional-dependencies]
+erax = ["ultralytics"]
+
 [dependency-groups]
 dev = ["pytest", "ruff"]
 

@@ -261,3 +261,21 @@ def test_censor_config_resolve_matches_function():
 def test_censor_config_defaults():
     config = CensorConfig()
     assert config.resolve_classes() == CENSOR_PRESETS["all"]
+
+
+# --- EraX class mapping contract test ---
+
+
+def test_erax_mapped_classes_covered_by_presets():
+    """All canonical class names emitted by EraX must be recognized by censor presets."""
+    from bsafe.detector import _ERAX_CLASS_MAP
+
+    all_preset_classes = set()
+    for preset_classes in CENSOR_PRESETS.values():
+        all_preset_classes.update(preset_classes)
+
+    for erax_name, canonical_names in _ERAX_CLASS_MAP.items():
+        for canonical in canonical_names:
+            assert canonical in all_preset_classes, (
+                f"EraX class '{erax_name}' maps to '{canonical}' which is not in any CENSOR_PRESETS"
+            )

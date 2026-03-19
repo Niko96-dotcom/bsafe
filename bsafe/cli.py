@@ -15,7 +15,10 @@ logger = logging.getLogger(__name__)
 def _add_censor_args(parser):
     """Add shared censor flags to a subcommand parser."""
     parser.add_argument(
-        "--confidence", type=float, default=0.0, help="Min detection confidence (default: 0.0)"
+        "--confidence",
+        type=float,
+        default=None,
+        help="Min detection confidence (default: 0.0 for NudeNet, 0.3 for EraX)",
     )
     parser.add_argument(
         "--censor",
@@ -84,9 +87,10 @@ def _add_censor_args(parser):
     )
     parser.add_argument(
         "--model",
-        choices=["320n", "640m"],
+        choices=["320n", "640m", "erax-nano", "erax-small", "erax-medium"],
         default=None,
-        help="Detection model: '320n' (default, fast) or '640m' (accurate, requires download)",
+        help="Detection model: '320n' (default, bundled), '640m' (accurate, requires download), "
+        "'erax-nano/small/medium' (EraX YOLO, requires download + uv sync --extra erax)",
     )
     parser.add_argument("-v", "--verbose", action="store_true", help="Verbose logging")
 
@@ -128,6 +132,30 @@ def _validate_censor_args(args):
         sys.exit(1)
 
 
+def _resolve_confidence(args):
+    """Set confidence to a backend-appropriate default when not explicitly provided."""
+    if args.confidence is not None:
+        return
+    from bsafe.detector import get_model_backend
+
+    backend = get_model_backend(args.model)
+    args.confidence = 0.3 if backend == "erax" else 0.0
+
+
+def _warn_erax_unsupported(args):
+    """Print warnings for flags that have no effect with EraX models."""
+    from bsafe.detector import ERAX_UNSUPPORTED_FLAGS, get_model_backend
+
+    if get_model_backend(args.model) != "erax":
+        return
+    for attr, flag in ERAX_UNSUPPORTED_FLAGS.items():
+        if getattr(args, attr, False):
+            print(
+                f"Warning: {flag} has no effect with EraX models (no covered/face/feet classes)",
+                file=sys.stderr,
+            )
+
+
 def cmd_start(args):
     if args.dry_run:
         stop = False
@@ -159,6 +187,7 @@ def cmd_start(args):
         print("Error: --fps must be between 1 and 255", file=sys.stderr)
         sys.exit(1)
     _validate_censor_args(args)
+    _resolve_confidence(args)
     socket_path = os.path.join(tempfile.gettempdir(), f"bsafe-{os.getpid()}.sock")
 
     censor_classes = resolve_censor_classes(
@@ -171,8 +200,11 @@ def cmd_start(args):
     padding = args.padding
     tracker = BoxTracker(persist_frames=args.persist_frames, smooth_alpha=args.smooth_alpha)
 
+    # Warn about unsupported flags with EraX
+    _warn_erax_unsupported(args)
+
     # Initialize detector
-    print("Loading NudeNet model...", flush=True)
+    print(f"Loading model {args.model or '320n'}...", flush=True)
     detector = Detector(min_confidence=args.confidence, model=args.model)
 
     # Start IPC server
@@ -237,6 +269,8 @@ def cmd_start(args):
 
 def cmd_video(args):
     _validate_censor_args(args)
+    _resolve_confidence(args)
+    _warn_erax_unsupported(args)
 
     from bsafe.censor import CensorConfig
     from bsafe.video import process_video
@@ -277,6 +311,8 @@ def cmd_video(args):
 
 def cmd_image(args):
     _validate_censor_args(args)
+    _resolve_confidence(args)
+    _warn_erax_unsupported(args)
 
     from bsafe.censor import CensorConfig
     from bsafe.image import process_image

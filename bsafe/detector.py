@@ -1,47 +1,97 @@
-"""NudeNet wrapper: takes frames or JPEG bytes, returns detections."""
+"""Detection backends: NudeNet and EraX (ultralytics YOLO)."""
 
 import logging
 import os
 import tempfile
 from dataclasses import dataclass
+from typing import NamedTuple
 
 import numpy as np
 
 logger = logging.getLogger(__name__)
 
-KNOWN_MODELS: dict[str, str | None] = {
-    "320n": None,  # bundled with nudenet
-    "640m": "~/.config/bsafe/models/640m.onnx",
+
+class ModelInfo(NamedTuple):
+    backend: str
+    path: str | None
+
+
+KNOWN_MODELS: dict[str, ModelInfo] = {
+    "320n": ModelInfo(backend="nudenet", path=None),
+    "640m": ModelInfo(backend="nudenet", path="~/.config/bsafe/models/640m.onnx"),
+    "erax-nano": ModelInfo(
+        backend="erax", path="~/.config/bsafe/models/erax-anti-nsfw-yolo11n-v1.1.pt"
+    ),
+    "erax-small": ModelInfo(
+        backend="erax", path="~/.config/bsafe/models/erax-anti-nsfw-yolo11s-v1.1.pt"
+    ),
+    "erax-medium": ModelInfo(
+        backend="erax", path="~/.config/bsafe/models/erax-anti-nsfw-yolo11m-v1.1.pt"
+    ),
 }
 
-_640M_DOWNLOAD_URL = (
-    "https://github.com/notAI-tech/NudeNet/releases/download/v3.4-weights/640m.onnx"
-)
+_DOWNLOAD_URLS: dict[str, str] = {
+    "640m": "https://github.com/notAI-tech/NudeNet/releases/download/v3.4-weights/640m.onnx",
+    "erax-nano": "https://huggingface.co/erax-ai/EraX-Anti-NSFW-V1.1/resolve/main/erax-anti-nsfw-yolo11n-v1.1.pt",
+    "erax-small": "https://huggingface.co/erax-ai/EraX-Anti-NSFW-V1.1/resolve/main/erax-anti-nsfw-yolo11s-v1.1.pt",
+    "erax-medium": "https://huggingface.co/erax-ai/EraX-Anti-NSFW-V1.1/resolve/main/erax-anti-nsfw-yolo11m-v1.1.pt",
+}
+
+# EraX class names → canonical NudeNet names used by censor.py
+_ERAX_CLASS_MAP: dict[str, list[str]] = {
+    "anus": ["ANUS_EXPOSED"],
+    "penis": ["MALE_GENITALIA_EXPOSED"],
+    "vagina": ["FEMALE_GENITALIA_EXPOSED"],
+    "nipple": ["FEMALE_BREAST_EXPOSED"],
+}
+
+# NMS IoU threshold for EraX: controls when overlapping detections of the
+# same class are merged by ultralytics (unrelated to tracking IoU).
+_ERAX_NMS_IOU: float = 0.3
+
+# Flags that require NudeNet-only classes not available in EraX
+ERAX_UNSUPPORTED_FLAGS: dict[str, str] = {
+    "covered": "--covered",
+    "face_male": "--face-male",
+    "face_female": "--face-female",
+    "feet": "--feet",
+}
 
 
-def resolve_model(name: str | None) -> str | None:
-    """Resolve a model name to a path (or None for the bundled default).
+def resolve_model(name: str | None) -> ModelInfo:
+    """Resolve a model name to a ModelInfo.
 
     Raises ValueError for unknown names or missing model files.
     """
-    if name is None or name == "320n":
-        return None
+    if name is None:
+        name = "320n"
 
     if name not in KNOWN_MODELS:
         raise ValueError(f"unknown model '{name}'. Known models: {', '.join(sorted(KNOWN_MODELS))}")
 
-    raw_path = KNOWN_MODELS[name]
-    assert raw_path is not None
-    path = os.path.expanduser(raw_path)
+    info = KNOWN_MODELS[name]
+    if info.path is None:
+        return info
 
+    path = os.path.expanduser(info.path)
     if not os.path.isfile(path):
+        url = _DOWNLOAD_URLS.get(name, "<unknown>")
         raise ValueError(
             f"model file not found: {path}\n"
             f"Download it with:\n"
-            f"  mkdir -p ~/.config/bsafe/models && curl -Lo {path} {_640M_DOWNLOAD_URL}"
+            f"  mkdir -p ~/.config/bsafe/models && curl -Lo {path} {url}"
         )
 
-    return path
+    return ModelInfo(backend=info.backend, path=path)
+
+
+def get_model_backend(name: str | None) -> str:
+    """Return the backend type for a model name without checking if the file exists."""
+    if name is None:
+        name = "320n"
+    if name not in KNOWN_MODELS:
+        raise ValueError(f"unknown model '{name}'. Known models: {', '.join(sorted(KNOWN_MODELS))}")
+    return KNOWN_MODELS[name].backend
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,20 +101,15 @@ class Detection:
     box: tuple[int, int, int, int]  # x, y, w, h
 
 
-class Detector:
-    """Wraps NudeDetector for frames or JPEG bytes → detections."""
-
-    def __init__(self, min_confidence: float = 0.5, model: str | None = None):
+class _NudeNetBackend:
+    def __init__(self, min_confidence: float, model_path: str | None):
         from nudenet import NudeDetector
 
         self.min_confidence = min_confidence
-        model_path = resolve_model(model)
         self._detector = NudeDetector(model_path=model_path) if model_path else NudeDetector()
-        # Reusable temp file for JPEG-bytes path (used by live capture)
         tmp = tempfile.NamedTemporaryFile(suffix=".jpg", prefix="bsafe-det-", delete=False)
         self._tmp_path = tmp.name
         tmp.close()
-        logger.info("NudeNet detector initialized (model=%s)", model or "320n")
 
     def close(self):
         try:
@@ -89,14 +134,90 @@ class Detector:
         return detections
 
     def detect(self, jpeg_bytes: bytes) -> list[Detection]:
-        """Run inference on JPEG bytes. Returns filtered detections."""
-        # NudeNet requires a file path — reuse a single temp file
         with open(self._tmp_path, "wb") as f:
             f.write(jpeg_bytes)
         results = self._detector.detect(self._tmp_path)
         return self._parse_results(results)
 
     def detect_frame(self, frame: np.ndarray) -> list[Detection]:
-        """Run inference on a BGR numpy frame directly (no JPEG roundtrip)."""
         results = self._detector.detect(frame)
         return self._parse_results(results)
+
+
+class _EraXBackend:
+    def __init__(self, min_confidence: float, model_path: str):
+        try:
+            from ultralytics import YOLO
+        except ImportError:
+            raise ImportError(
+                "ultralytics is required for EraX models. Install with: uv sync --extra erax"
+            ) from None
+
+        self.min_confidence = min_confidence
+        self._model = YOLO(model_path)
+
+    def close(self):
+        pass
+
+    def _parse_results(self, results) -> list[Detection]:
+        detections = []
+        for result in results:
+            boxes = result.boxes
+            if boxes is None:
+                continue
+            for i in range(len(boxes)):
+                confidence = float(boxes.conf[i])
+                if confidence < self.min_confidence:
+                    continue
+                cls_id = int(boxes.cls[i])
+                cls_name = result.names[cls_id]
+                mapped = _ERAX_CLASS_MAP.get(cls_name)
+                if mapped is None:
+                    continue
+                # xyxy → (x, y, w, h)
+                x1, y1, x2, y2 = boxes.xyxy[i].tolist()
+                box = (int(x1), int(y1), int(x2 - x1), int(y2 - y1))
+                for canonical_name in mapped:
+                    detections.append(
+                        Detection(class_name=canonical_name, confidence=confidence, box=box)
+                    )
+        return detections
+
+    def detect_frame(self, frame: np.ndarray) -> list[Detection]:
+        import cv2
+
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        results = self._model.predict(
+            rgb, conf=self.min_confidence, iou=_ERAX_NMS_IOU, verbose=False
+        )
+        return self._parse_results(results)
+
+    def detect(self, jpeg_bytes: bytes) -> list[Detection]:
+        import cv2
+
+        arr = np.frombuffer(jpeg_bytes, dtype=np.uint8)
+        frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        return self.detect_frame(frame)
+
+
+class Detector:
+    """Unified detector: delegates to NudeNet or EraX backend."""
+
+    def __init__(self, min_confidence: float = 0.5, model: str | None = None):
+        info = resolve_model(model)
+        if info.backend == "erax":
+            self._backend = _EraXBackend(min_confidence, info.path)
+        else:
+            self._backend = _NudeNetBackend(min_confidence, info.path)
+        logger.info("Detector initialized (model=%s, backend=%s)", model or "320n", info.backend)
+
+    def close(self):
+        self._backend.close()
+
+    def detect(self, jpeg_bytes: bytes) -> list[Detection]:
+        """Run inference on JPEG bytes. Returns filtered detections."""
+        return self._backend.detect(jpeg_bytes)
+
+    def detect_frame(self, frame: np.ndarray) -> list[Detection]:
+        """Run inference on a BGR numpy frame directly."""
+        return self._backend.detect_frame(frame)

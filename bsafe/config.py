@@ -4,9 +4,9 @@ import tomllib
 CONFIG_PATH = os.path.expanduser("~/.config/bsafe/config.toml")
 
 VALID_KEYS = {
-    "start": {"fps", "dry_run", "display"},
-    "video": {"fps", "chunk_frames"},
-    "image": set(),
+    "start": {"fps", "dry_run", "display", "model"},
+    "video": {"fps", "chunk_frames", "model"},
+    "image": {"model"},
     "common": {
         "confidence",
         "censor",
@@ -37,17 +37,19 @@ def generate_default_config() -> str:
 fps = 45
 display = "primary"
 dry_run = false
+# model =            # override [common] model for real-time screen censoring
 
 [video]
 # fps =              # unset = use native video FPS
 # chunk_frames =     # unset = 5000
+# model =            # override [common] model for video processing
 
 [image]
-# No image-specific keys — uses [common] settings only.
+# model =            # override [common] model for image processing
 # Note: persist_frames and smooth_alpha from [common] are ignored for images.
 
 [common]
-confidence = 0.0
+# confidence =       # unset = 0.0 for NudeNet, 0.3 for EraX
 censor = "all"
 padding = 0.0
 persist_frames = 8
@@ -60,7 +62,7 @@ covered = false
 face_male = false
 face_female = false
 feet = false
-# model =            # unset = "320n"
+# model =            # unset = "320n". Options: 320n, 640m, erax-nano, erax-small, erax-medium
 verbose = false
 """
 
