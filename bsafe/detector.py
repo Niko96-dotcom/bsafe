@@ -203,8 +203,10 @@ class _EraXBackend:
 class Detector:
     """Unified detector: delegates to NudeNet or EraX backend."""
 
-    def __init__(self, min_confidence: float = 0.5, model: str | None = None):
+    def __init__(self, min_confidence: float | None = None, model: str | None = None):
         info = resolve_model(model)
+        if min_confidence is None:
+            min_confidence = 0.3 if info.backend == "erax" else 0.0
         if info.backend == "erax":
             self._backend = _EraXBackend(min_confidence, info.path)
         else:

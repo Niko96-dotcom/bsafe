@@ -29,7 +29,7 @@ def process_image(
     input_path: str,
     *,
     output_path: str | None = None,
-    confidence: float = 0.0,
+    confidence: float | None = None,
     censor_config: CensorConfig | None = None,
     padding: float = 0.0,
     blur: float = 0.0,

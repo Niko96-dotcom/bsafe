@@ -395,7 +395,7 @@ def process_video(
     input_path: str,
     *,
     output_path: str | None = None,
-    confidence: float = 0.0,
+    confidence: float | None = None,
     censor_config: CensorConfig = CensorConfig(),
     padding: float = 0.0,
     persist_frames: int = 8,
