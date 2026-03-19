@@ -325,12 +325,12 @@ def cmd_displays(args):
         print("No displays found.")
         return
 
-    print(f"{'ID':<12} {'Resolution':<16} {'Primary'}")
-    print(f"{'─' * 12} {'─' * 16} {'─' * 7}")
+    print(f"{'ID':<12} {'Resolution':<16} {'Role'}")
+    print(f"{'─' * 12} {'─' * 16} {'─' * 11}")
     for d in displays:
         res = f"{d['width']}x{d['height']}"
-        primary = "yes" if d.get("primary") else "no"
-        print(f"{d['id']:<12} {res:<16} {primary}")
+        label = "(primary)" if d.get("primary") else "(secondary)"
+        print(f"{d['id']:<12} {res:<16} {label}")
 
 
 def cmd_bootstrap(args):

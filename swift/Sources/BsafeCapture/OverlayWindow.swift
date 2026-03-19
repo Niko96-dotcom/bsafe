@@ -6,6 +6,8 @@ class CensorView: NSView {
     var blur: Double = 0.0
     var pixels: Double = 0.0
     var text: String? = nil
+    /// AppKit screen frame origin for this display (used to convert to global CG coords for pixel capture).
+    var screenOrigin: NSPoint = .zero
     private var effectViews: [NSVisualEffectView] = []
     private var pixelImages: [NSImage] = []
     private var cachedPixelBoxes: [NSRect] = []
@@ -91,13 +93,18 @@ class CensorView: NSView {
                 }
 
                 // Capture and pixelate this box
-                guard let screenHeight = NSScreen.main?.frame.height else {
+                // Convert view-local AppKit coords to global CG coords for CGWindowListCreateImage
+                guard let primaryHeight = NSScreen.screens.first?.frame.height else {
                     newImages.append(NSImage())
                     continue
                 }
+                // AppKit global coords: add screen origin to view-local position
+                let globalAppKitX = screenOrigin.x + box.origin.x
+                let globalAppKitY = screenOrigin.y + box.origin.y
+                // CG coords: flip Y using primary screen height
                 let captureRect = CGRect(
-                    x: box.origin.x,
-                    y: screenHeight - box.origin.y - box.height,
+                    x: globalAppKitX,
+                    y: primaryHeight - globalAppKitY - box.height,
                     width: box.width,
                     height: box.height
                 )
@@ -156,10 +163,29 @@ class CensorOverlay {
 
     /// Create the overlay window covering the given display. Must be called on the main thread.
     func setup(displayID: CGDirectDisplayID) {
-        displayBounds = CGDisplayBounds(displayID)
+        // Use NSScreen.frame (AppKit coordinates, bottom-left origin) for window positioning.
+        // CGDisplayBounds uses CG coordinates (top-left origin) which mispositions the window
+        // on secondary displays.
+        let screenFrame: NSRect
+        if let match = NSScreen.screens.first(where: {
+            ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID) == displayID
+        }) {
+            screenFrame = match.frame
+        } else {
+            // Fallback: convert CGDisplayBounds CG coords → AppKit coords
+            let cgBounds = CGDisplayBounds(displayID)
+            let primaryHeight = NSScreen.screens.first?.frame.height ?? cgBounds.height
+            screenFrame = NSRect(
+                x: cgBounds.origin.x,
+                y: primaryHeight - cgBounds.origin.y - cgBounds.height,
+                width: cgBounds.width,
+                height: cgBounds.height
+            )
+        }
+        displayBounds = screenFrame
 
         let window = NSWindow(
-            contentRect: displayBounds,
+            contentRect: screenFrame,
             styleMask: .borderless,
             backing: .buffered,
             defer: false
@@ -172,7 +198,8 @@ class CensorOverlay {
         window.collectionBehavior = [.canJoinAllSpaces, .stationary]
         window.hasShadow = false
 
-        let view = CensorView(frame: displayBounds)
+        let view = CensorView(frame: NSRect(origin: .zero, size: screenFrame.size))
+        view.screenOrigin = screenFrame.origin
         window.contentView = view
 
         window.orderFrontRegardless()
@@ -202,7 +229,7 @@ class CensorOverlay {
             let h = min(CGFloat(box.h) * scaleY, maxH)
             // Flip Y: AppKit origin is bottom-left
             let flippedY = displayH - y - h
-            return NSRect(x: displayBounds.origin.x + x, y: displayBounds.origin.y + flippedY, width: w, height: h)
+            return NSRect(x: x, y: flippedY, width: w, height: h)
         }
 
         DispatchQueue.main.async { [weak self] in
