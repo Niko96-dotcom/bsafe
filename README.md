@@ -2,7 +2,12 @@
 
 ## About
 
-Censor NSFW content on your MacOS screen. CLI.
+Censor NSFW content on your macOS screen in real time. CLI tool, fully offline.
+
+Supports real-time screen censoring, video file processing (with audio
+preservation), and image censoring — with multiple detection models,
+censor styles (black boxes, blur, pixelation, text overlay), and
+per-body-part configuration.
 
 ## Setting up locally
 
@@ -53,10 +58,8 @@ bsafe start --display 1234567     # by numeric ID (from bsafe displays)
 bsafe start --display all         # all displays (uses more CPU)
 ```
 
-There are bottlenecks. If you try to support a lot of displays/monitors, in high resolution,
-with lots of NSFW content...
-the more you increase even one of these factors, the more quality will be compromised, remember you
-are processing video inputs and rendering video outputs in real time, this is heavy work.
+Covering more displays at higher resolutions with more NSFW content increases CPU load
+and may reduce quality — you are processing and rendering video in real time.
 
 ### Process a video file
 
@@ -73,10 +76,8 @@ bsafe video clip.mp4 --fps 5          # run detection at 5 FPS (output keeps nat
 Supported formats: `.mp4`, `.m4v`, `.mov`. If `ffmpeg` is installed, audio is
 preserved in the output; otherwise the video is written without audio.
 
-Videos are processed in chunks (default: 5000 frames). If the process is killed
-(e.g. by the OS due to memory pressure), re-run the same command to resume —
-completed chunks are preserved on disk and skipped automatically. All chunks are
-combined into the final output at the end.
+Videos are processed in chunks (default: 5000 frames). If interrupted, re-run the
+same command to resume — completed chunks are skipped automatically.
 
 ### Configuration file
 
@@ -134,12 +135,9 @@ The default `320n` model is bundled with NudeNet. Other models require a manual 
 | `erax-small` | EraX YOLO | ~40 MB | Balanced, mAP 0.453 |
 | `erax-medium` | EraX YOLO | ~19 MB | Best EraX accuracy, mAP 0.467 |
 
-NudeNet models have broader coverage, detecting faces, covered parts, and feet.
-EraX models are more targeted/specific, for example detecting nipples specifically.
-
-As for computational efforts, the default NudeNet (`320n`) is lightweight and best for `bsafe start`,
-where keeping a decent FPS matters. EraX models are heavier and will drop frames in real time, but
-work great with `bsafe image` and `bsafe video` where auto FPS removes that constraint.
+NudeNet models have broader coverage (faces, covered parts, feet) and are lightweight —
+best for real-time `bsafe start`. EraX models are more targeted (e.g. nipple-specific)
+and heavier — better suited for `bsafe image` and `bsafe video` where FPS isn't a constraint.
 
 #### Using the 640m model
 
