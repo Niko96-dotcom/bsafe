@@ -286,6 +286,7 @@ def cmd_video(args):
     try:
         process_video(
             args.input,
+            output_path=args.output,
             confidence=args.confidence,
             censor_config=censor_config,
             padding=args.padding,
@@ -530,6 +531,9 @@ def main():
         "video", help="Process a video file and output a censored copy"
     )
     video_parser.add_argument("input", help="Path to video file (.mp4, .m4v, .mov)")
+    video_parser.add_argument(
+        "-o", "--output", default=None, help="Output file path (default: <input>.bsafe.<ext>)"
+    )
     video_parser.add_argument(
         "--fps", type=int, default=None, help="Detection FPS override (default: native)"
     )

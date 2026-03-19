@@ -114,6 +114,7 @@ Shared flags (work with both `start` and `video`):
 
 `video`-only flags:
 
+- `-o` / `--output PATH` — output file path (default: `<input>.bsafe.<ext>`)
 - `--fps N` — detection FPS override (default: native video FPS)
 - `--chunk-frames N` — frames per processing chunk (default: 5000). Smaller chunks use less memory but may cause brief tracking gaps at chunk boundaries.
 

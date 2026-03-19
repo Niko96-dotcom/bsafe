@@ -394,6 +394,7 @@ def _mux_audio(tmp_path: str, input_path: str, output_path: str) -> None:
 def process_video(
     input_path: str,
     *,
+    output_path: str | None = None,
     confidence: float = 0.0,
     censor_config: CensorConfig = CensorConfig(),
     padding: float = 0.0,
@@ -431,7 +432,8 @@ def process_video(
             f"unsupported format '{ext}'. Supported: {', '.join(sorted(SUPPORTED_EXTENSIONS))}"
         )
 
-    output_path = f"{stem}.bsafe{ext}"
+    if output_path is None:
+        output_path = f"{stem}.bsafe{ext}"
     if os.path.exists(output_path):
         raise ValueError(f"output file already exists: {output_path}")
 
