@@ -28,6 +28,7 @@ SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff
 def process_image(
     input_path: str,
     *,
+    output_path: str | None = None,
     confidence: float = 0.0,
     censor_config: CensorConfig | None = None,
     padding: float = 0.0,
@@ -51,7 +52,12 @@ def process_image(
             f"unsupported format '{ext}'. Supported: {', '.join(sorted(SUPPORTED_EXTENSIONS))}"
         )
 
-    output_path = f"{stem}.bsafe{ext}"
+    if output_path is None:
+        output_path = f"{stem}.bsafe{ext}"
+    else:
+        output_dir = os.path.dirname(os.path.abspath(output_path))
+        if not os.path.isdir(output_dir):
+            raise ValueError(f"output directory does not exist: {output_dir}")
     if os.path.exists(output_path):
         raise ValueError(f"output already exists: {output_path}")
 

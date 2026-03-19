@@ -112,6 +112,10 @@ Shared flags (work with both `start` and `video`):
 - `--display VALUE` — display to capture: `primary`, `secondary`, `all`, or numeric ID (default: `primary`)
 - `--dry-run` — run the loop without the Swift helper or detector
 
+`image`-only flags:
+
+- `-o` / `--output PATH` — output file path (default: `<input>.bsafe.<ext>`)
+
 `video`-only flags:
 
 - `-o` / `--output PATH` — output file path (default: `<input>.bsafe.<ext>`)

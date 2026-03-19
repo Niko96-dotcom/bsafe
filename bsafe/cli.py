@@ -329,6 +329,7 @@ def cmd_image(args):
     try:
         output_path = process_image(
             args.input,
+            output_path=args.output,
             confidence=args.confidence,
             censor_config=censor_config,
             padding=args.padding,
@@ -553,6 +554,9 @@ def main():
     )
     image_parser.add_argument(
         "input", help="Path to image file (.jpg, .jpeg, .png, .bmp, .webp, .tif, .tiff)"
+    )
+    image_parser.add_argument(
+        "-o", "--output", default=None, help="Output file path (default: <input>.bsafe.<ext>)"
     )
     _add_censor_args(image_parser)
 

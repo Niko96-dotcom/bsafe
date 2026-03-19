@@ -434,6 +434,10 @@ def process_video(
 
     if output_path is None:
         output_path = f"{stem}.bsafe{ext}"
+    else:
+        output_dir = os.path.dirname(os.path.abspath(output_path))
+        if not os.path.isdir(output_dir):
+            raise ValueError(f"output directory does not exist: {output_dir}")
     if os.path.exists(output_path):
         raise ValueError(f"output file already exists: {output_path}")
 

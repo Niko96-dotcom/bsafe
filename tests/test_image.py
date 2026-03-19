@@ -57,6 +57,18 @@ def test_bad_extension_raises(tmp_path):
         process_image(str(bad))
 
 
+def test_custom_output_path(test_image, mock_detector, tmp_path):
+    custom = str(tmp_path / "custom_output.jpg")
+    output = process_image(test_image, output_path=custom)
+    assert output == custom
+    assert os.path.exists(custom)
+
+
+def test_output_dir_missing_raises(test_image):
+    with pytest.raises(ValueError, match="output directory does not exist"):
+        process_image(test_image, output_path="/nonexistent/dir/out.jpg")
+
+
 def test_output_already_exists_raises(test_image, mock_detector):
     output_path = test_image.replace(".jpg", ".bsafe.jpg")
     with open(output_path, "w") as f:

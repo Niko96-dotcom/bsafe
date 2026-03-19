@@ -83,6 +83,18 @@ def test_bad_extension_raises(tmp_path):
         process_video(str(bad))
 
 
+def test_custom_output_path(test_video, mock_detector, tmp_path):
+    custom = str(tmp_path / "custom_output.mp4")
+    output = process_video(test_video, output_path=custom)
+    assert output == custom
+    assert os.path.exists(custom)
+
+
+def test_output_dir_missing_raises(test_video):
+    with pytest.raises(ValueError, match="output directory does not exist"):
+        process_video(test_video, output_path="/nonexistent/dir/out.mp4")
+
+
 def test_output_already_exists_raises(test_video, mock_detector):
     # Create the output file first
     output_path = test_video.replace(".mp4", ".bsafe.mp4")
