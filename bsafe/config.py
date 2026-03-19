@@ -3,27 +3,29 @@ import tomllib
 
 CONFIG_PATH = os.path.expanduser("~/.config/bsafe/config.toml")
 
+_COMMON_KEYS = {
+    "confidence",
+    "censor",
+    "padding",
+    "persist_frames",
+    "smooth_alpha",
+    "blur",
+    "pixels",
+    "censor_text",
+    "full_censor",
+    "covered",
+    "face_male",
+    "face_female",
+    "feet",
+    "model",
+    "verbose",
+}
+
 VALID_KEYS = {
-    "start": {"fps", "dry_run", "display", "model"},
-    "video": {"fps", "chunk_frames", "model"},
-    "image": {"model"},
-    "common": {
-        "confidence",
-        "censor",
-        "padding",
-        "persist_frames",
-        "smooth_alpha",
-        "blur",
-        "pixels",
-        "censor_text",
-        "full_censor",
-        "covered",
-        "face_male",
-        "face_female",
-        "feet",
-        "model",
-        "verbose",
-    },
+    "start": {"fps", "dry_run", "display"} | _COMMON_KEYS,
+    "video": {"fps", "chunk_frames"} | _COMMON_KEYS,
+    "image": _COMMON_KEYS.copy(),
+    "common": _COMMON_KEYS,
 }
 
 
@@ -49,7 +51,7 @@ dry_run = false
 # Note: persist_frames and smooth_alpha from [common] are ignored for images.
 
 [common]
-# confidence =       # unset = 0.0 for NudeNet, 0.3 for EraX
+# confidence =       # unset = 0.0 for NudeNet, 0.2 for EraX
 censor = "all"
 padding = 0.0
 persist_frames = 8

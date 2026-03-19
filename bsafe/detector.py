@@ -206,7 +206,7 @@ class Detector:
     def __init__(self, min_confidence: float | None = None, model: str | None = None):
         info = resolve_model(model)
         if min_confidence is None:
-            min_confidence = 0.3 if info.backend == "erax" else 0.0
+            min_confidence = 0.2 if info.backend == "erax" else 0.0
         if info.backend == "erax":
             self._backend = _EraXBackend(min_confidence, info.path)
         else:

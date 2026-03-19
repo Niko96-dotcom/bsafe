@@ -18,7 +18,7 @@ def _add_censor_args(parser):
         "--confidence",
         type=float,
         default=None,
-        help="Min detection confidence (default: 0.0 for NudeNet, 0.3 for EraX)",
+        help="Min detection confidence (default: 0.0 for NudeNet, 0.2 for EraX)",
     )
     parser.add_argument(
         "--censor",
@@ -139,7 +139,7 @@ def _resolve_confidence(args):
     from bsafe.detector import get_model_backend
 
     backend = get_model_backend(args.model)
-    args.confidence = 0.3 if backend == "erax" else 0.0
+    args.confidence = 0.2 if backend == "erax" else 0.0
 
 
 def _warn_erax_unsupported(args):
