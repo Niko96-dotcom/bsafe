@@ -200,9 +200,10 @@ def test_concat_chunks_raises_on_all_ffmpeg_failures(tmp_path):
     _create_test_video(input_path)
 
     failed = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="error")
-    with patch("bsafe.video.subprocess.run", return_value=failed):
-        with pytest.raises(RuntimeError, match="ffmpeg failed to concatenate"):
-            _concat_chunks(chunks_dir, 2, str(tmp_path / "out.mp4"), input_path)
+    with patch("bsafe.video.shutil.which", return_value="/usr/bin/ffmpeg"):
+        with patch("bsafe.video.subprocess.run", return_value=failed):
+            with pytest.raises(RuntimeError, match="ffmpeg failed to concatenate"):
+                _concat_chunks(chunks_dir, 2, str(tmp_path / "out.mp4"), input_path)
 
 
 def test_concat_chunks_raises_on_timeout(tmp_path):
@@ -214,9 +215,10 @@ def test_concat_chunks_raises_on_timeout(tmp_path):
     input_path = str(tmp_path / "input.mp4")
     _create_test_video(input_path)
 
-    with patch(
-        "bsafe.video.subprocess.run",
-        side_effect=subprocess.TimeoutExpired(cmd="ffmpeg", timeout=600),
-    ):
-        with pytest.raises(RuntimeError, match="ffmpeg error during assembly"):
-            _concat_chunks(chunks_dir, 2, str(tmp_path / "out.mp4"), input_path)
+    with patch("bsafe.video.shutil.which", return_value="/usr/bin/ffmpeg"):
+        with patch(
+            "bsafe.video.subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd="ffmpeg", timeout=600),
+        ):
+            with pytest.raises(RuntimeError, match="ffmpeg error during assembly"):
+                _concat_chunks(chunks_dir, 2, str(tmp_path / "out.mp4"), input_path)
