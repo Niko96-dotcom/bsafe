@@ -1,4 +1,5 @@
 import os
+import subprocess
 from unittest.mock import MagicMock, patch
 
 import cv2
@@ -8,6 +9,7 @@ import pytest
 from bsafe.video import (
     SUPPORTED_EXTENSIONS,
     _CHUNK_FRAMES,
+    _concat_chunks,
     _process_chunk,
     process_video,
 )
@@ -67,7 +69,7 @@ def test_process_video_creates_output(test_video, mock_detector):
 
 def test_output_path_generation(test_video, mock_detector):
     output = process_video(test_video)
-    expected = test_video.replace(".mp4", ".bsafe.mp4")
+    expected = test_video.replace(".mp4", ".320n.bsafe.mp4")
     assert output == expected
 
 
@@ -97,7 +99,7 @@ def test_output_dir_missing_raises(test_video):
 
 def test_output_already_exists_raises(test_video, mock_detector):
     # Create the output file first
-    output_path = test_video.replace(".mp4", ".bsafe.mp4")
+    output_path = test_video.replace(".mp4", ".320n.bsafe.mp4")
     with open(output_path, "w") as f:
         f.write("existing")
     with pytest.raises(ValueError, match="already exists"):
@@ -135,7 +137,7 @@ def test_process_video_with_censor_text(test_video, mock_detector):
 
 def test_chunks_cleaned_up_after_success(test_video, mock_detector):
     """Chunk directory should be removed after successful processing."""
-    chunks_dir = test_video.replace(".mp4", ".bsafe.chunks")
+    chunks_dir = test_video.replace(".mp4", ".320n.bsafe.chunks")
     process_video(test_video)
     assert not os.path.exists(chunks_dir)
 
@@ -148,7 +150,7 @@ def test_resume_from_partial(tmp_path, mock_detector):
     _create_test_video(path, frames=total)
 
     # Simulate a previous partial run: create a complete first chunk
-    chunks_dir = str(tmp_path / "test.bsafe.chunks")
+    chunks_dir = str(tmp_path / "test.320n.bsafe.chunks")
     os.makedirs(chunks_dir)
     chunk_0 = os.path.join(chunks_dir, "chunk_0000.mp4")
     _create_test_video(chunk_0, frames=_CHUNK_FRAMES)
@@ -186,3 +188,35 @@ def test_chunk_retry_exhausted(test_video, mock_detector):
     ):
         with pytest.raises(RuntimeError, match="--chunk-frames"):
             process_video(test_video)
+
+
+def test_concat_chunks_raises_on_all_ffmpeg_failures(tmp_path):
+    """RuntimeError should be raised when all ffmpeg strategies fail."""
+    chunks_dir = str(tmp_path / "chunks")
+    os.makedirs(chunks_dir)
+    for i in range(2):
+        _create_test_video(os.path.join(chunks_dir, f"chunk_{i:04d}.mp4"))
+    input_path = str(tmp_path / "input.mp4")
+    _create_test_video(input_path)
+
+    failed = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="error")
+    with patch("bsafe.video.subprocess.run", return_value=failed):
+        with pytest.raises(RuntimeError, match="ffmpeg failed to concatenate"):
+            _concat_chunks(chunks_dir, 2, str(tmp_path / "out.mp4"), input_path)
+
+
+def test_concat_chunks_raises_on_timeout(tmp_path):
+    """RuntimeError should be raised when ffmpeg times out."""
+    chunks_dir = str(tmp_path / "chunks")
+    os.makedirs(chunks_dir)
+    for i in range(2):
+        _create_test_video(os.path.join(chunks_dir, f"chunk_{i:04d}.mp4"))
+    input_path = str(tmp_path / "input.mp4")
+    _create_test_video(input_path)
+
+    with patch(
+        "bsafe.video.subprocess.run",
+        side_effect=subprocess.TimeoutExpired(cmd="ffmpeg", timeout=600),
+    ):
+        with pytest.raises(RuntimeError, match="ffmpeg error during assembly"):
+            _concat_chunks(chunks_dir, 2, str(tmp_path / "out.mp4"), input_path)

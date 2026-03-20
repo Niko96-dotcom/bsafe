@@ -16,6 +16,8 @@ class ModelInfo(NamedTuple):
     path: str | None
 
 
+DEFAULT_MODEL = "320n"
+
 KNOWN_MODELS: dict[str, ModelInfo] = {
     "320n": ModelInfo(backend="nudenet", path=None),
     "640m": ModelInfo(backend="nudenet", path="~/.config/bsafe/models/640m.onnx"),
@@ -64,7 +66,7 @@ def resolve_model(name: str | None) -> ModelInfo:
     Raises ValueError for unknown names or missing model files.
     """
     if name is None:
-        name = "320n"
+        name = DEFAULT_MODEL
 
     if name not in KNOWN_MODELS:
         raise ValueError(f"unknown model '{name}'. Known models: {', '.join(sorted(KNOWN_MODELS))}")
@@ -88,7 +90,7 @@ def resolve_model(name: str | None) -> ModelInfo:
 def get_model_backend(name: str | None) -> str:
     """Return the backend type for a model name without checking if the file exists."""
     if name is None:
-        name = "320n"
+        name = DEFAULT_MODEL
     if name not in KNOWN_MODELS:
         raise ValueError(f"unknown model '{name}'. Known models: {', '.join(sorted(KNOWN_MODELS))}")
     return KNOWN_MODELS[name].backend
@@ -211,7 +213,9 @@ class Detector:
             self._backend = _EraXBackend(min_confidence, info.path)
         else:
             self._backend = _NudeNetBackend(min_confidence, info.path)
-        logger.info("Detector initialized (model=%s, backend=%s)", model or "320n", info.backend)
+        logger.info(
+            "Detector initialized (model=%s, backend=%s)", model or DEFAULT_MODEL, info.backend
+        )
 
     def close(self):
         self._backend.close()

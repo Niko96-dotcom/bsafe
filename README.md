@@ -66,7 +66,7 @@ and may reduce quality — you are processing and rendering video in real time.
 Produce a censored copy of a local video (the original is never modified):
 
 ```sh
-bsafe video clip.mp4                  # → clip.bsafe.mp4
+bsafe video clip.mp4                  # → clip.320n.bsafe.mp4
 bsafe video clip.mp4 --blur           # blur instead of black boxes
 bsafe video clip.mp4 --pixels         # pixelation effect
 bsafe video clip.mp4 --censor-text    # overlay "NSFW" text
@@ -115,11 +115,11 @@ Shared flags (work with both `start` and `video`):
 
 `image`-only flags:
 
-- `-o` / `--output PATH` — output file path (default: `<input>.bsafe.<ext>`)
+- `-o` / `--output PATH` — output file path (default: `<input>.<model>.bsafe.<ext>`)
 
 `video`-only flags:
 
-- `-o` / `--output PATH` — output file path (default: `<input>.bsafe.<ext>`)
+- `-o` / `--output PATH` — output file path (default: `<input>.<model>.bsafe.<ext>`)
 - `--fps N` — detection FPS override (default: native video FPS)
 - `--chunk-frames N` — frames per processing chunk (default: 5000). Smaller chunks use less memory but may cause brief tracking gaps at chunk boundaries.
 

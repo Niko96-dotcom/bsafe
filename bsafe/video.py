@@ -20,7 +20,7 @@ from bsafe.censor import (
     build_censor_boxes,
     expand_boxes,
 )
-from bsafe.detector import Detector
+from bsafe.detector import DEFAULT_MODEL, Detector
 from bsafe.render import render_censors
 from bsafe.tracking import BoxTracker
 
@@ -30,6 +30,8 @@ SUPPORTED_EXTENSIONS = {".mp4", ".m4v", ".mov"}
 _CHUNK_FRAMES = 5000  # frames per chunk — memory resets between chunks
 _MEMORY_HIGH_MB = 4096  # log a warning when RSS exceeds this
 _MAX_CHUNK_RETRIES = 3
+_STREAM_COPY_TIMEOUT = 600  # seconds for stream-copy ffmpeg operations
+_REENCODE_TIMEOUT = 3600  # seconds for re-encode ffmpeg fallback
 
 
 def _get_rss_mb() -> float:
@@ -237,37 +239,39 @@ def _run_chunk_subprocess(**kwargs) -> int:
     return proc.exitcode if proc.exitcode is not None else 1
 
 
-def _concat_chunks(chunks_dir: str, chunk_count: int, output_path: str, input_path: str) -> None:
-    """Concatenate chunk files and mux audio from the original."""
-    ffmpeg = shutil.which("ffmpeg")
-
-    if chunk_count == 1:
-        single = _chunk_path(chunks_dir, 0)
-        if ffmpeg:
-            _mux_audio(single, input_path, output_path)
-        else:
-            os.rename(single, output_path)
-        return
-
-    if not ffmpeg:
-        logger.warning("ffmpeg not found — cannot concatenate chunks or preserve audio")
-        # Fall back: just use the first chunk (better than nothing)
-        os.rename(_chunk_path(chunks_dir, 0), output_path)
-        return
-
-    # Write ffmpeg concat list
-    list_path = os.path.join(chunks_dir, "concat.txt")
-    with open(list_path, "w") as f:
-        for i in range(chunk_count):
-            # Use just the filename since concat.txt lives inside chunks_dir
-            # and ffmpeg resolves paths relative to the concat file's location
-            fname = f"chunk_{i:04d}.mp4".replace("'", "'\\''")
-            f.write(f"file '{fname}'\n")
-
-    # Concat chunks + re-encode to H.264 + mux audio
-    tmp_concat = os.path.join(chunks_dir, "concat.mp4")
-    try:
-        result = subprocess.run(
+def _build_concat_strategies(
+    ffmpeg: str, list_path: str, input_path: str, tmp_concat: str
+) -> list[tuple[str, list[str], int]]:
+    """Return (label, args, timeout) tuples for concat fallback strategies."""
+    return [
+        (
+            "copy",
+            [
+                ffmpeg,
+                "-f",
+                "concat",
+                "-safe",
+                "0",
+                "-i",
+                list_path,
+                "-i",
+                input_path,
+                "-c:v",
+                "copy",
+                "-c:a",
+                "aac",
+                "-map",
+                "0:v:0",
+                "-map",
+                "1:a:0?",
+                "-shortest",
+                "-y",
+                tmp_concat,
+            ],
+            _STREAM_COPY_TIMEOUT,
+        ),
+        (
+            "re-encode",
             [
                 ffmpeg,
                 "-f",
@@ -294,60 +298,112 @@ def _concat_chunks(chunks_dir: str, chunk_count: int, output_path: str, input_pa
                 "-y",
                 tmp_concat,
             ],
-            capture_output=True,
-            text=True,
-            timeout=600,
-        )
-        if result.returncode != 0:
-            logger.warning("ffmpeg concat failed (exit %d): %s", result.returncode, result.stderr)
-            # Try without audio
-            result2 = subprocess.run(
-                [
-                    ffmpeg,
-                    "-f",
-                    "concat",
-                    "-safe",
-                    "0",
-                    "-i",
-                    list_path,
-                    "-c:v",
-                    "libx264",
-                    "-preset",
-                    "fast",
-                    "-crf",
-                    "18",
-                    "-y",
-                    tmp_concat,
-                ],
-                capture_output=True,
-                text=True,
-                timeout=600,
-            )
-            if result2.returncode != 0:
-                logger.warning("ffmpeg concat (no audio) also failed: %s", result2.stderr)
-                os.rename(_chunk_path(chunks_dir, 0), output_path)
-                return
-            logger.warning("audio not preserved")
-
-        os.rename(tmp_concat, output_path)
-    except subprocess.TimeoutExpired, FileNotFoundError:
-        logger.warning("ffmpeg error — falling back to first chunk only")
-        os.rename(_chunk_path(chunks_dir, 0), output_path)
+            _REENCODE_TIMEOUT,
+        ),
+        (
+            "copy-no-audio",
+            [
+                ffmpeg,
+                "-f",
+                "concat",
+                "-safe",
+                "0",
+                "-i",
+                list_path,
+                "-c:v",
+                "copy",
+                "-y",
+                tmp_concat,
+            ],
+            _STREAM_COPY_TIMEOUT,
+        ),
+    ]
 
 
-def _mux_audio(tmp_path: str, input_path: str, output_path: str) -> None:
-    """Mux audio from original into the censored video via ffmpeg.
-
-    Falls back to renaming if ffmpeg is unavailable or fails.
-    """
+def _concat_chunks(chunks_dir: str, chunk_count: int, output_path: str, input_path: str) -> None:
+    """Concatenate chunk files and mux audio from the original."""
     ffmpeg = shutil.which("ffmpeg")
-    if not ffmpeg:
-        logger.warning("ffmpeg not found — audio will not be preserved")
-        os.rename(tmp_path, output_path)
+
+    if chunk_count == 1:
+        single = _chunk_path(chunks_dir, 0)
+        if ffmpeg:
+            _mux_audio(single, input_path, output_path)
+        else:
+            os.rename(single, output_path)
         return
 
+    if not ffmpeg:
+        logger.warning("ffmpeg not found — cannot concatenate chunks or preserve audio")
+        os.rename(_chunk_path(chunks_dir, 0), output_path)
+        return
+
+    # Write ffmpeg concat list
+    list_path = os.path.join(chunks_dir, "concat.txt")
+    with open(list_path, "w") as f:
+        for i in range(chunk_count):
+            fname = f"chunk_{i:04d}.mp4".replace("'", "'\\''")
+            f.write(f"file '{fname}'\n")
+
+    tmp_concat = os.path.join(chunks_dir, "concat.mp4")
+    strategies = _build_concat_strategies(ffmpeg, list_path, input_path, tmp_concat)
+
     try:
-        result = subprocess.run(
+        for label, args, timeout in strategies:
+            result = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+            if result.returncode == 0:
+                if label == "copy-no-audio":
+                    logger.warning("audio not preserved")
+                break
+            logger.warning(
+                "ffmpeg concat (%s) failed (exit %d): %s",
+                label,
+                result.returncode,
+                result.stderr,
+            )
+        else:
+            raise RuntimeError(
+                f"ffmpeg failed to concatenate chunks.\n"
+                f"  Chunks are preserved in: {chunks_dir}\n"
+                f"  Re-run the same command to retry assembly."
+            )
+        os.rename(tmp_concat, output_path)
+    except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
+        raise RuntimeError(
+            f"ffmpeg error during assembly: {exc}\n"
+            f"  Chunks are preserved in: {chunks_dir}\n"
+            f"  Re-run the same command to retry assembly."
+        ) from exc
+
+
+def _build_mux_strategies(
+    ffmpeg: str, tmp_path: str, input_path: str, output_path: str
+) -> list[tuple[str, list[str], int]]:
+    """Return (label, args, timeout) tuples for audio mux fallback strategies."""
+    return [
+        (
+            "copy",
+            [
+                ffmpeg,
+                "-i",
+                tmp_path,
+                "-i",
+                input_path,
+                "-c:v",
+                "copy",
+                "-c:a",
+                "aac",
+                "-map",
+                "0:v:0",
+                "-map",
+                "1:a:0?",
+                "-shortest",
+                "-y",
+                output_path,
+            ],
+            _STREAM_COPY_TIMEOUT,
+        ),
+        (
+            "re-encode",
             [
                 ffmpeg,
                 "-i",
@@ -370,22 +426,41 @@ def _mux_audio(tmp_path: str, input_path: str, output_path: str) -> None:
                 "-y",
                 output_path,
             ],
-            capture_output=True,
-            text=True,
-            timeout=600,
-        )
-        if result.returncode != 0:
+            _REENCODE_TIMEOUT,
+        ),
+    ]
+
+
+def _mux_audio(tmp_path: str, input_path: str, output_path: str) -> None:
+    """Mux audio from original into the censored video via ffmpeg.
+
+    Falls back to renaming if ffmpeg is unavailable or all strategies fail.
+    """
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        logger.warning("ffmpeg not found — audio will not be preserved")
+        os.rename(tmp_path, output_path)
+        return
+
+    strategies = _build_mux_strategies(ffmpeg, tmp_path, input_path, output_path)
+
+    try:
+        for label, args, timeout in strategies:
+            result = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+            if result.returncode == 0:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                return
             logger.warning(
-                "ffmpeg failed (exit %d) — audio will not be preserved: %s",
+                "ffmpeg mux (%s) failed (exit %d): %s",
+                label,
                 result.returncode,
                 result.stderr,
             )
-            os.rename(tmp_path, output_path)
-        else:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
+        logger.warning("all ffmpeg mux strategies failed — audio will not be preserved")
+        os.rename(tmp_path, output_path)
     except subprocess.TimeoutExpired, FileNotFoundError:
         logger.warning("ffmpeg error — audio will not be preserved")
         os.rename(tmp_path, output_path)
@@ -432,8 +507,9 @@ def process_video(
             f"unsupported format '{ext}'. Supported: {', '.join(sorted(SUPPORTED_EXTENSIONS))}"
         )
 
+    model_tag = model or DEFAULT_MODEL
     if output_path is None:
-        output_path = f"{stem}.bsafe{ext}"
+        output_path = f"{stem}.{model_tag}.bsafe{ext}"
     else:
         output_dir = os.path.dirname(os.path.abspath(output_path))
         if not os.path.isdir(output_dir):
@@ -464,7 +540,7 @@ def process_video(
     frames_per_chunk = chunk_frames if chunk_frames else _CHUNK_FRAMES
 
     # Set up chunks directory
-    chunks_dir = f"{stem}.bsafe.chunks"
+    chunks_dir = f"{stem}.{model_tag}.bsafe.chunks"
     os.makedirs(chunks_dir, exist_ok=True)
 
     # Calculate chunk boundaries
@@ -583,7 +659,15 @@ def process_video(
 
     # Concatenate chunks + mux audio
     print("  Assembling final video (combining all chunks)...", flush=True)
-    _concat_chunks(chunks_dir, total_chunks, output_path, input_path)
+    try:
+        _concat_chunks(chunks_dir, total_chunks, output_path, input_path)
+    except RuntimeError:
+        print(
+            f"\n  Assembly failed. Chunks are preserved in: {chunks_dir}\n"
+            f"  Re-run the same command to retry.",
+            flush=True,
+        )
+        raise
 
     # Clean up chunks directory
     shutil.rmtree(chunks_dir, ignore_errors=True)

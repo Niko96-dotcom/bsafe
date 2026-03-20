@@ -41,7 +41,7 @@ def test_process_image_creates_output(test_image, mock_detector):
 
 def test_output_path_generation(test_image, mock_detector):
     output = process_image(test_image)
-    expected = test_image.replace(".jpg", ".bsafe.jpg")
+    expected = test_image.replace(".jpg", ".320n.bsafe.jpg")
     assert output == expected
 
 
@@ -70,7 +70,7 @@ def test_output_dir_missing_raises(test_image):
 
 
 def test_output_already_exists_raises(test_image, mock_detector):
-    output_path = test_image.replace(".jpg", ".bsafe.jpg")
+    output_path = test_image.replace(".jpg", ".320n.bsafe.jpg")
     with open(output_path, "w") as f:
         f.write("existing")
     with pytest.raises(ValueError, match="already exists"):
@@ -106,7 +106,7 @@ def test_process_image_png(tmp_path, mock_detector):
     path = str(tmp_path / "test.png")
     _create_test_image(path)
     output = process_image(path)
-    assert output.endswith(".bsafe.png")
+    assert output.endswith(".320n.bsafe.png")
     assert os.path.exists(output)
 
 

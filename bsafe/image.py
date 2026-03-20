@@ -17,7 +17,7 @@ from bsafe.censor import (
     build_censor_boxes,
     expand_boxes,
 )
-from bsafe.detector import Detector
+from bsafe.detector import DEFAULT_MODEL, Detector
 from bsafe.render import render_censors
 
 logger = logging.getLogger(__name__)
@@ -52,8 +52,9 @@ def process_image(
             f"unsupported format '{ext}'. Supported: {', '.join(sorted(SUPPORTED_EXTENSIONS))}"
         )
 
+    model_tag = model or DEFAULT_MODEL
     if output_path is None:
-        output_path = f"{stem}.bsafe{ext}"
+        output_path = f"{stem}.{model_tag}.bsafe{ext}"
     else:
         output_dir = os.path.dirname(os.path.abspath(output_path))
         if not os.path.isdir(output_dir):

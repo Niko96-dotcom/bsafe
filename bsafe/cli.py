@@ -570,7 +570,10 @@ def main():
     )
     video_parser.add_argument("input", help="Path to video file (.mp4, .m4v, .mov)")
     video_parser.add_argument(
-        "-o", "--output", default=None, help="Output file path (default: <input>.bsafe.<ext>)"
+        "-o",
+        "--output",
+        default=None,
+        help="Output file path (default: <input>.<model>.bsafe.<ext>)",
     )
     video_parser.add_argument(
         "--fps", type=int, default=None, help="Detection FPS override (default: native)"
@@ -593,7 +596,10 @@ def main():
         "input", help="Path to image file (.jpg, .jpeg, .png, .bmp, .webp, .tif, .tiff)"
     )
     image_parser.add_argument(
-        "-o", "--output", default=None, help="Output file path (default: <input>.bsafe.<ext>)"
+        "-o",
+        "--output",
+        default=None,
+        help="Output file path (default: <input>.<model>.bsafe.<ext>)",
     )
     _add_censor_args(image_parser)
 
