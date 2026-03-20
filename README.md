@@ -61,9 +61,9 @@ bsafe start --display all         # all displays (uses more CPU)
 Covering more displays at higher resolutions with more NSFW content increases CPU load
 and may reduce quality — you are processing and rendering video in real time.
 
-### Process a video file
+### Process video files
 
-Produce a censored copy of a local video (the original is never modified):
+Produce censored copies of local videos (originals are never modified):
 
 ```sh
 bsafe video clip.mp4                  # → clip.320n.bsafe.mp4
@@ -73,11 +73,35 @@ bsafe video clip.mp4 --censor-text    # overlay "NSFW" text
 bsafe video clip.mp4 --fps 5          # run detection at 5 FPS (output keeps native FPS)
 ```
 
+Process multiple files at once (shell globs work):
+
+```sh
+bsafe video *.mp4 --blur              # process all .mp4 files with blur
+bsafe video a.mp4 b.mov c.m4v        # explicit file list
+```
+
 Supported formats: `.mp4`, `.m4v`, `.mov`. If `ffmpeg` is installed, audio is
 preserved in the output; otherwise the video is written without audio.
 
 Videos are processed in chunks (default: 5000 frames). If interrupted, re-run the
-same command to resume — completed chunks are skipped automatically.
+same command to resume — completed chunks are skipped automatically. In batch mode,
+files with existing output are skipped (idempotent). Non-video files and directories
+are filtered out automatically.
+
+### Process image files
+
+Produce censored copies of local images:
+
+```sh
+bsafe image photo.jpg                 # → photo.320n.bsafe.jpg
+bsafe image *.jpg --pixels            # process all .jpg files with pixelation
+bsafe image a.png b.webp --blur       # explicit file list
+```
+
+Supported formats: `.jpg`, `.jpeg`, `.png`, `.bmp`, `.webp`, `.tif`, `.tiff`.
+Re-running the same command skips files that already have output (idempotent).
+
+Note: `-o/--output` cannot be used with multiple input files.
 
 ### Configuration file
 

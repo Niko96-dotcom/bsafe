@@ -16,6 +16,15 @@
 
 `bsafe/detector.py` uses a backend abstraction: `_NudeNetBackend` (NudeNet ONNX models) and `_EraXBackend` (ultralytics YOLO `.pt` models). `Detector` delegates to the correct backend based on `ModelInfo.backend`. `ultralytics` is an optional dependency — install with `uv sync --extra erax`. EraX class names are mapped to NudeNet canonical names so `censor.py` works unchanged.
 
+## Batch processing
+
+`bsafe video` and `bsafe image` accept multiple files (shell globs). Process tree:
+
+- **Video batch**: each file runs in a spawned subprocess (which itself spawns chunk subprocesses). Full memory isolation per file. `gc.collect()` between files.
+- **Image batch**: all files run in the main process sequentially. `gc.collect()` between files (`process_image` creates and closes the detector internally). No subprocess overhead since images are lightweight.
+
+Single-file mode preserves existing behavior exactly (no batch wrappers). `-o/--output` is disallowed with multiple inputs.
+
 ## Before committing
 
 Always run all CI checks locally **before** every commit — format, lint, and tests. Fix any issues before committing. Do not prompt the user to commit; wait for them to ask.

@@ -1,6 +1,8 @@
 import argparse
 import faulthandler
+import gc
 import logging
+import multiprocessing
 import os
 import queue
 import signal
@@ -302,6 +304,132 @@ def cmd_start(args):
         print("Stopped.")
 
 
+def _expected_output(input_path: str, model: str | None) -> str:
+    """Compute the default output path for an input file."""
+    from bsafe.detector import DEFAULT_MODEL
+
+    stem, ext = os.path.splitext(input_path)
+    tag = model or DEFAULT_MODEL
+    return f"{stem}.{tag}.bsafe{ext}"
+
+
+def _filter_inputs(
+    inputs: list[str], supported_extensions: set[str], file_type: str, model: str | None
+) -> tuple[list[str], int, int]:
+    """Filter input paths for batch processing.
+
+    Returns (to_process, skipped_existing, filtered_out).
+    """
+    filtered_out = 0
+    skipped_existing = 0
+    not_found = 0
+    to_process = []
+
+    for path in inputs:
+        if os.path.isdir(path):
+            filtered_out += 1
+            continue
+        if not os.path.isfile(path):
+            print(f"Warning: file not found: {path}", file=sys.stderr)
+            not_found += 1
+            continue
+        _, ext = os.path.splitext(path)
+        if ext.lower() not in supported_extensions:
+            filtered_out += 1
+            continue
+        if ".bsafe." in os.path.basename(path):
+            filtered_out += 1
+            continue
+        expected = _expected_output(path, model)
+        if os.path.exists(expected):
+            skipped_existing += 1
+            continue
+        to_process.append(path)
+
+    # Print summary
+    if to_process:
+        names = [os.path.basename(p) for p in to_process[:5]]
+        listing = ", ".join(names)
+        if len(to_process) > 5:
+            listing += f", ... and {len(to_process) - 5} more"
+        print(f"Found {len(to_process)} {file_type}(s): {listing}")
+    if filtered_out > 0:
+        print(f"Skipped {filtered_out} non-{file_type} file(s)")
+    if not_found > 0:
+        print(f"Skipped {not_found} missing file(s)")
+    if skipped_existing > 0:
+        print(f"Skipping {skipped_existing} file(s) with existing output")
+    if to_process:
+        print(f"Processing {len(to_process)} file(s)...")
+
+    return to_process, skipped_existing, filtered_out
+
+
+def _print_batch_summary(total: int, skipped: int, errors: list[tuple[str, str]]) -> None:
+    """Print a summary after batch processing."""
+    processed = total - len(errors)
+    parts = [f"{processed} processed"]
+    if skipped:
+        parts.append(f"{skipped} skipped")
+    if errors:
+        parts.append(f"{len(errors)} failed")
+    print(f"Batch complete: {', '.join(parts)}")
+    if errors:
+        for path, msg in errors:
+            print(f"  {os.path.basename(path)}: {msg}", file=sys.stderr)
+
+
+def _video_worker(
+    error_queue,
+    input_path: str,
+    kwargs: dict,
+) -> None:
+    """Top-level function for subprocess video processing (must be picklable)."""
+    try:
+        from bsafe.video import process_video
+
+        process_video(input_path, **kwargs)
+    except Exception as e:
+        error_queue.put(str(e))
+        raise
+
+
+def _run_file_subprocess(target, *args) -> tuple[int, str | None]:
+    """Run target(*args) in a spawned subprocess. Returns (exit_code, error_message)."""
+    ctx = multiprocessing.get_context("spawn")
+    error_queue = ctx.Queue()
+    proc = ctx.Process(target=target, args=(error_queue, *args))
+    proc.start()
+    proc.join()
+    error_msg = None
+    if not error_queue.empty():
+        error_msg = error_queue.get_nowait()
+    exit_code = proc.exitcode if proc.exitcode is not None else 1
+    return exit_code, error_msg
+
+
+# Process tree architecture for batch mode:
+#
+# bsafe video *.mp4 --blur
+#   main process (CLI, orchestration loop)
+#     ├── file_1 subprocess (process_video → spawns chunk subprocesses)
+#     │     ├── chunk_0 subprocess (loads model, processes frames)
+#     │     ├── chunk_1 subprocess
+#     │     └── ...
+#     ├── file_2 subprocess
+#     │     └── ...
+#     └── gc.collect() between files
+#
+# bsafe image *.jpg --pixels
+#   main process (CLI, orchestration loop)
+#     ├── process_image(file_1) → gc.collect()  (detector created+closed internally)
+#     ├── process_image(file_2) → gc.collect()
+#     └── ...
+#
+# Video uses subprocess-per-file for full memory isolation (videos are heavy).
+# Image processes in-process sequentially (images are lightweight).
+
+
 def cmd_video(args):
     _validate_censor_args(args)
     _resolve_confidence(args)
@@ -309,7 +437,7 @@ def cmd_video(args):
     _print_config(args)
 
     from bsafe.censor import CensorConfig
-    from bsafe.video import process_video
+    from bsafe.video import SUPPORTED_EXTENSIONS, process_video
 
     censor_config = CensorConfig(
         preset=args.censor,
@@ -319,30 +447,65 @@ def cmd_video(args):
         feet=args.feet,
     )
 
-    try:
-        process_video(
-            args.input,
-            output_path=args.output,
-            confidence=args.confidence,
-            censor_config=censor_config,
-            padding=args.padding,
-            persist_frames=args.persist_frames,
-            smooth_alpha=args.smooth_alpha,
-            blur=args.blur,
-            pixels=args.pixels,
-            censor_text=args.censor_text,
-            full_censor=args.full_censor,
-            fps_override=args.fps,
-            model=args.model,
-            chunk_frames=args.chunk_frames,
-            verbose=args.verbose,
-        )
-        print("\a", end="", flush=True)
-    except KeyboardInterrupt:
-        print("\nInterrupted.", file=sys.stderr)
-        sys.exit(130)
-    except Exception as e:
-        print(f"\nError: {e}", file=sys.stderr)
+    inputs = args.input
+    if args.output and len(inputs) > 1:
+        print("Error: -o/--output cannot be used with multiple input files", file=sys.stderr)
+        sys.exit(1)
+
+    video_kwargs = dict(
+        confidence=args.confidence,
+        censor_config=censor_config,
+        padding=args.padding,
+        persist_frames=args.persist_frames,
+        smooth_alpha=args.smooth_alpha,
+        blur=args.blur,
+        pixels=args.pixels,
+        censor_text=args.censor_text,
+        full_censor=args.full_censor,
+        fps_override=args.fps,
+        model=args.model,
+        chunk_frames=args.chunk_frames,
+        verbose=args.verbose,
+    )
+
+    if len(inputs) == 1:
+        # Single-file mode: preserve existing behavior exactly
+        try:
+            process_video(inputs[0], output_path=args.output, **video_kwargs)
+            print("\a", end="", flush=True)
+        except KeyboardInterrupt:
+            print("\nInterrupted.", file=sys.stderr)
+            sys.exit(130)
+        except Exception as e:
+            print(f"\nError: {e}", file=sys.stderr)
+            sys.exit(1)
+        return
+
+    # Batch mode
+    to_process, skipped, _ = _filter_inputs(inputs, SUPPORTED_EXTENSIONS, "video", model=args.model)
+    if not to_process:
+        print("Nothing to process.")
+        return
+
+    errors: list[tuple[str, str]] = []
+    for i, path in enumerate(to_process, 1):
+        print(f"\n[{i}/{len(to_process)}] {os.path.basename(path)}")
+        try:
+            exit_code, error_msg = _run_file_subprocess(
+                _video_worker,
+                path,
+                {**video_kwargs, "output_path": None},
+            )
+            if exit_code != 0:
+                errors.append((path, error_msg or f"exit code {exit_code}"))
+        except KeyboardInterrupt:
+            print(f"\nInterrupted after {i - 1}/{len(to_process)} file(s).")
+            sys.exit(130)
+        gc.collect()
+
+    _print_batch_summary(len(to_process), skipped, errors)
+    print("\a", end="", flush=True)
+    if errors:
         sys.exit(1)
 
 
@@ -353,7 +516,7 @@ def cmd_image(args):
     _print_config(args)
 
     from bsafe.censor import CensorConfig
-    from bsafe.image import process_image
+    from bsafe.image import SUPPORTED_EXTENSIONS, process_image
 
     censor_config = CensorConfig(
         preset=args.censor,
@@ -363,27 +526,71 @@ def cmd_image(args):
         feet=args.feet,
     )
 
-    try:
-        output_path = process_image(
-            args.input,
-            output_path=args.output,
-            confidence=args.confidence,
-            censor_config=censor_config,
-            padding=args.padding,
-            blur=args.blur,
-            pixels=args.pixels,
-            censor_text=args.censor_text,
-            full_censor=args.full_censor,
-            model=args.model,
-            verbose=args.verbose,
-        )
-        print(output_path)
-        print("\a", end="", flush=True)
-    except KeyboardInterrupt:
-        print("\nInterrupted.", file=sys.stderr)
-        sys.exit(130)
-    except Exception as e:
-        print(f"\nError: {e}", file=sys.stderr)
+    inputs = args.input
+    if args.output and len(inputs) > 1:
+        print("Error: -o/--output cannot be used with multiple input files", file=sys.stderr)
+        sys.exit(1)
+
+    if len(inputs) == 1:
+        # Single-file mode: preserve existing behavior exactly
+        try:
+            output_path = process_image(
+                inputs[0],
+                output_path=args.output,
+                confidence=args.confidence,
+                censor_config=censor_config,
+                padding=args.padding,
+                blur=args.blur,
+                pixels=args.pixels,
+                censor_text=args.censor_text,
+                full_censor=args.full_censor,
+                model=args.model,
+                verbose=args.verbose,
+            )
+            print(output_path)
+            print("\a", end="", flush=True)
+        except KeyboardInterrupt:
+            print("\nInterrupted.", file=sys.stderr)
+            sys.exit(130)
+        except Exception as e:
+            print(f"\nError: {e}", file=sys.stderr)
+            sys.exit(1)
+        return
+
+    # Batch mode
+    to_process, skipped, _ = _filter_inputs(inputs, SUPPORTED_EXTENSIONS, "image", model=args.model)
+    if not to_process:
+        print("Nothing to process.")
+        return
+
+    errors: list[tuple[str, str]] = []
+    for i, path in enumerate(to_process, 1):
+        print(f"\n[{i}/{len(to_process)}] {os.path.basename(path)}")
+        try:
+            output_path = process_image(
+                path,
+                confidence=args.confidence,
+                censor_config=censor_config,
+                padding=args.padding,
+                blur=args.blur,
+                pixels=args.pixels,
+                censor_text=args.censor_text,
+                full_censor=args.full_censor,
+                model=args.model,
+                verbose=args.verbose,
+            )
+            print(f"  → {output_path}")
+        except KeyboardInterrupt:
+            print(f"\nInterrupted after {i - 1}/{len(to_process)} file(s).")
+            sys.exit(130)
+        except Exception as e:
+            print(f"  Error: {e}", file=sys.stderr)
+            errors.append((path, str(e)))
+        gc.collect()
+
+    _print_batch_summary(len(to_process), skipped, errors)
+    print("\a", end="", flush=True)
+    if errors:
         sys.exit(1)
 
 
@@ -541,9 +748,8 @@ def _print_alias_hint():
     print(f"  alias bsafe='uv run --project {project_dir} bsafe'")
 
 
-def main():
-    from bsafe.config import load_config
-
+def _build_parser():
+    """Construct the CLI argument parser. Returns (parser, start_parser, video_parser, image_parser)."""
     parser = argparse.ArgumentParser(prog="bsafe", description="Censor NSFW content on screen")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -568,7 +774,7 @@ def main():
     video_parser = subparsers.add_parser(
         "video", help="Process a video file and output a censored copy"
     )
-    video_parser.add_argument("input", help="Path to video file (.mp4, .m4v, .mov)")
+    video_parser.add_argument("input", nargs="+", help="Path(s) to video file(s)")
     video_parser.add_argument(
         "-o",
         "--output",
@@ -592,9 +798,7 @@ def main():
     image_parser = subparsers.add_parser(
         "image", help="Process an image file and output a censored copy"
     )
-    image_parser.add_argument(
-        "input", help="Path to image file (.jpg, .jpeg, .png, .bmp, .webp, .tif, .tiff)"
-    )
+    image_parser.add_argument("input", nargs="+", help="Path(s) to image file(s)")
     image_parser.add_argument(
         "-o",
         "--output",
@@ -606,6 +810,14 @@ def main():
     subparsers.add_parser("displays", help="List connected displays")
     subparsers.add_parser("doctor", help="Check system requirements")
     subparsers.add_parser("bootstrap", help="Install dependencies and build Swift helper")
+
+    return parser, start_parser, video_parser, image_parser
+
+
+def main():
+    from bsafe.config import load_config
+
+    parser, start_parser, video_parser, image_parser = _build_parser()
 
     # Load user config and apply as defaults to subparsers
     config = load_config()

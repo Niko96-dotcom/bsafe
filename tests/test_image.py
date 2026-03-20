@@ -110,6 +110,38 @@ def test_process_image_png(tmp_path, mock_detector):
     assert os.path.exists(output)
 
 
+def test_batch_processing(tmp_path, mock_detector):
+    """Process multiple images in sequence, verify all outputs exist."""
+    paths = []
+    for name in ["img1.jpg", "img2.png", "img3.jpg"]:
+        p = str(tmp_path / name)
+        _create_test_image(p)
+        paths.append(p)
+
+    outputs = []
+    for p in paths:
+        out = process_image(p)
+        outputs.append(out)
+        assert os.path.exists(out)
+        assert ".bsafe." in out
+
+    assert len(outputs) == 3
+
+
+def test_batch_idempotency_skips_existing(tmp_path, mock_detector):
+    """If output already exists, process_image raises ValueError (skip signal)."""
+    path = str(tmp_path / "photo.jpg")
+    _create_test_image(path)
+
+    # First run succeeds
+    output = process_image(path)
+    assert os.path.exists(output)
+
+    # Second run raises because output already exists
+    with pytest.raises(ValueError, match="already exists"):
+        process_image(path)
+
+
 def test_process_image_with_detections(tmp_path):
     """Exercise the detection → censor → render pipeline with a mock detection."""
     path = str(tmp_path / "test.png")
