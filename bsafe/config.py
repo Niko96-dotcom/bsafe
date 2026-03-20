@@ -1,6 +1,8 @@
 import os
 import tomllib
 
+from bsafe.style import warn
+
 CONFIG_PATH = os.path.expanduser("~/.config/bsafe/config.toml")
 
 _COMMON_KEYS = {
@@ -77,14 +79,14 @@ def load_config(path: str = CONFIG_PATH) -> dict:
         with open(path, "rb") as f:
             config = tomllib.load(f)
     except (tomllib.TOMLDecodeError, OSError) as e:
-        print(f"Warning: could not parse {path}: {e}")
+        print(f"{warn('Warning:')} could not parse {path}: {e}")
         return {}
     for section, keys in config.items():
         if section not in VALID_KEYS:
-            print(f"Warning: unknown config section [{section}] in {path}")
+            print(f"{warn('Warning:')} unknown config section [{section}] in {path}")
             continue
         if isinstance(keys, dict):
             for key in keys:
                 if key not in VALID_KEYS[section]:
-                    print(f"Warning: unknown key '{key}' in [{section}] in {path}")
+                    print(f"{warn('Warning:')} unknown key '{key}' in [{section}] in {path}")
     return config

@@ -11,6 +11,8 @@ import os
 
 import cv2
 
+from bsafe.style import dim, success
+
 from bsafe.censor import (
     FULL_CENSOR_MULTIPLIER,
     CensorConfig,
@@ -71,7 +73,7 @@ def process_image(
     classes = config.resolve_classes()
 
     if verbose:
-        print(f"Processing {input_path} ({w}x{h})...", flush=True)
+        print(dim(f"Processing {input_path} ({w}x{h})..."), flush=True)
 
     detector = Detector(min_confidence=confidence, model=model)
     detections = detector.detect_frame(frame)
@@ -87,6 +89,6 @@ def process_image(
 
     cv2.imwrite(output_path, frame)
     if verbose:
-        print(f"Saved to {output_path} ({len(detections)} detection(s))", flush=True)
+        print(f"{success('Saved')} to {output_path} ({len(detections)} detection(s))", flush=True)
 
     return output_path

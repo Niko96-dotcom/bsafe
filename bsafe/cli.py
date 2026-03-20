@@ -11,6 +11,8 @@ import sys
 import tempfile
 import time
 
+from bsafe.style import bold, dim, error, info, success, warn
+
 logger = logging.getLogger(__name__)
 
 
@@ -116,21 +118,21 @@ def _add_temporal_args(parser):
 def _validate_censor_args(args):
     """Validate shared censor arguments. Exits on error."""
     if args.padding < 0:
-        print("Error: --padding must be >= 0", file=sys.stderr)
+        print(f"{error('Error:')} --padding must be >= 0", file=sys.stderr)
         sys.exit(1)
     if hasattr(args, "smooth_alpha") and not (0.0 <= args.smooth_alpha <= 1.0):
-        print("Error: --smooth-alpha must be between 0.0 and 1.0", file=sys.stderr)
+        print(f"{error('Error:')} --smooth-alpha must be between 0.0 and 1.0", file=sys.stderr)
         sys.exit(1)
     blur = args.blur or 0.0
     pixels = args.pixels or 0.0
     if not (0.0 <= blur <= 3.0):
-        print("Error: --blur must be between 0.0 and 3.0", file=sys.stderr)
+        print(f"{error('Error:')} --blur must be between 0.0 and 3.0", file=sys.stderr)
         sys.exit(1)
     if not (0.0 <= pixels <= 3.0):
-        print("Error: --pixels must be between 0.0 and 3.0", file=sys.stderr)
+        print(f"{error('Error:')} --pixels must be between 0.0 and 3.0", file=sys.stderr)
         sys.exit(1)
     if blur > 0.0 and pixels > 0.0:
-        print("Error: --blur and --pixels are mutually exclusive", file=sys.stderr)
+        print(f"{error('Error:')} --blur and --pixels are mutually exclusive", file=sys.stderr)
         sys.exit(1)
 
 
@@ -153,7 +155,7 @@ def _warn_erax_unsupported(args):
     for attr, flag in ERAX_UNSUPPORTED_FLAGS.items():
         if getattr(args, attr, False):
             print(
-                f"Warning: {flag} has no effect with EraX models (no covered/face/feet classes)",
+                f"{warn('Warning:')} {flag} has no effect with EraX models (no covered/face/feet classes)",
                 file=sys.stderr,
             )
 
@@ -188,7 +190,7 @@ def _print_config(args):
     ]
     if extras:
         parts.append(f"extras={','.join(extras)}")
-    print(f"Config: {', '.join(parts)}", flush=True)
+    print(f"{dim('Config:')} {', '.join(parts)}", flush=True)
 
 
 def cmd_start(args):
@@ -200,10 +202,10 @@ def cmd_start(args):
             stop = True
 
         signal.signal(signal.SIGINT, _handle_sigint)
-        print("Running... press Ctrl+C to stop.", flush=True)
+        print(bold("Running...") + " press Ctrl+C to stop.", flush=True)
         while not stop:
             time.sleep(0.2)
-        print("\nStopped.")
+        print(f"\n{bold('Stopped.')}")
         return
 
     from bsafe.censor import (
@@ -219,7 +221,7 @@ def cmd_start(args):
 
     fps = args.fps
     if fps < 1 or fps > 255:
-        print("Error: --fps must be between 1 and 255", file=sys.stderr)
+        print(f"{error('Error:')} --fps must be between 1 and 255", file=sys.stderr)
         sys.exit(1)
     _validate_censor_args(args)
     _resolve_confidence(args)
@@ -241,7 +243,7 @@ def cmd_start(args):
     _print_config(args)
 
     # Initialize detector
-    print(f"Loading model {args.model or '320n'}...", flush=True)
+    print(f"Loading model {bold(args.model or '320n')}...", flush=True)
     detector = Detector(min_confidence=args.confidence, model=args.model)
 
     # Start IPC server
@@ -254,14 +256,17 @@ def cmd_start(args):
     print("Starting screen capture...", flush=True)
     helper = spawn_helper(socket_path, fps, display=args.display)
 
-    print("Running... press Ctrl+C to stop.", flush=True)
+    print(bold("Running...") + " press Ctrl+C to stop.", flush=True)
 
     try:
         while True:
             # Check if helper is still running
             if helper.poll() is not None:
                 stderr_out = helper.stderr.read() if helper.stderr else ""
-                print(f"\nSwift helper exited (code {helper.returncode})", file=sys.stderr)
+                print(
+                    f"\n{error('Error:')} Swift helper exited (code {helper.returncode})",
+                    file=sys.stderr,
+                )
                 if stderr_out:
                     print(f"Helper stderr: {stderr_out}", file=sys.stderr)
                 break
@@ -290,7 +295,7 @@ def cmd_start(args):
             server.send_censor(meta.display_id, meta.width, meta.height, boxes)
 
     except KeyboardInterrupt:
-        print("\nShutting down...")
+        print(f"\n{bold('Shutting down...')}")
     finally:
         server.shutdown()
         detector.close()
@@ -301,7 +306,7 @@ def cmd_start(args):
             except subprocess.TimeoutExpired:
                 helper.kill()
                 helper.wait()
-        print("Stopped.")
+        print(bold("Stopped."))
 
 
 def _expected_output(input_path: str, model: str | None) -> str:
@@ -330,7 +335,7 @@ def _filter_inputs(
             filtered_out += 1
             continue
         if not os.path.isfile(path):
-            print(f"Warning: file not found: {path}", file=sys.stderr)
+            print(f"{warn('Warning:')} file not found: {path}", file=sys.stderr)
             not_found += 1
             continue
         _, ext = os.path.splitext(path)
@@ -352,15 +357,15 @@ def _filter_inputs(
         listing = ", ".join(names)
         if len(to_process) > 5:
             listing += f", ... and {len(to_process) - 5} more"
-        print(f"Found {len(to_process)} {file_type}(s): {listing}")
+        print(f"Found {info(str(len(to_process)))} {file_type}(s): {listing}")
     if filtered_out > 0:
-        print(f"Skipped {filtered_out} non-{file_type} file(s)")
+        print(dim(f"Skipped {filtered_out} non-{file_type} file(s)"))
     if not_found > 0:
-        print(f"Skipped {not_found} missing file(s)")
+        print(dim(f"Skipped {not_found} missing file(s)"))
     if skipped_existing > 0:
-        print(f"Skipping {skipped_existing} file(s) with existing output")
+        print(dim(f"Skipping {skipped_existing} file(s) with existing output"))
     if to_process:
-        print(f"Processing {len(to_process)} file(s)...")
+        print(f"Processing {info(str(len(to_process)))} file(s)...")
 
     return to_process, skipped_existing, filtered_out
 
@@ -368,11 +373,11 @@ def _filter_inputs(
 def _print_batch_summary(total: int, skipped: int, errors: list[tuple[str, str]]) -> None:
     """Print a summary after batch processing."""
     processed = total - len(errors)
-    parts = [f"{processed} processed"]
+    parts = [f"{success(str(processed))} processed"]
     if skipped:
-        parts.append(f"{skipped} skipped")
+        parts.append(f"{dim(str(skipped))} skipped")
     if errors:
-        parts.append(f"{len(errors)} failed")
+        parts.append(f"{error(str(len(errors)))} failed")
     print(f"Batch complete: {', '.join(parts)}")
     if errors:
         for path, msg in errors:
@@ -449,7 +454,10 @@ def cmd_video(args):
 
     inputs = args.input
     if args.output and len(inputs) > 1:
-        print("Error: -o/--output cannot be used with multiple input files", file=sys.stderr)
+        print(
+            f"{error('Error:')} -o/--output cannot be used with multiple input files",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     video_kwargs = dict(
@@ -477,7 +485,7 @@ def cmd_video(args):
             print("\nInterrupted.", file=sys.stderr)
             sys.exit(130)
         except Exception as e:
-            print(f"\nError: {e}", file=sys.stderr)
+            print(f"\n{error('Error:')} {e}", file=sys.stderr)
             sys.exit(1)
         return
 
@@ -489,7 +497,7 @@ def cmd_video(args):
 
     errors: list[tuple[str, str]] = []
     for i, path in enumerate(to_process, 1):
-        print(f"\n[{i}/{len(to_process)}] {os.path.basename(path)}")
+        print(f"\n{info(f'[{i}/{len(to_process)}]')} {os.path.basename(path)}")
         try:
             exit_code, error_msg = _run_file_subprocess(
                 _video_worker,
@@ -528,7 +536,10 @@ def cmd_image(args):
 
     inputs = args.input
     if args.output and len(inputs) > 1:
-        print("Error: -o/--output cannot be used with multiple input files", file=sys.stderr)
+        print(
+            f"{error('Error:')} -o/--output cannot be used with multiple input files",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     if len(inputs) == 1:
@@ -553,7 +564,7 @@ def cmd_image(args):
             print("\nInterrupted.", file=sys.stderr)
             sys.exit(130)
         except Exception as e:
-            print(f"\nError: {e}", file=sys.stderr)
+            print(f"\n{error('Error:')} {e}", file=sys.stderr)
             sys.exit(1)
         return
 
@@ -565,7 +576,7 @@ def cmd_image(args):
 
     errors: list[tuple[str, str]] = []
     for i, path in enumerate(to_process, 1):
-        print(f"\n[{i}/{len(to_process)}] {os.path.basename(path)}")
+        print(f"\n{info(f'[{i}/{len(to_process)}]')} {os.path.basename(path)}")
         try:
             output_path = process_image(
                 path,
@@ -584,7 +595,7 @@ def cmd_image(args):
             print(f"\nInterrupted after {i - 1}/{len(to_process)} file(s).")
             sys.exit(130)
         except Exception as e:
-            print(f"  Error: {e}", file=sys.stderr)
+            print(f"  {error('Error:')} {e}", file=sys.stderr)
             errors.append((path, str(e)))
         gc.collect()
 
@@ -600,7 +611,7 @@ def cmd_displays(args):
     try:
         displays = list_displays()
     except (FileNotFoundError, RuntimeError) as e:
-        print(f"Error: {e}", file=sys.stderr)
+        print(f"{error('Error:')} {e}", file=sys.stderr)
         sys.exit(1)
 
     if not displays:
@@ -608,10 +619,10 @@ def cmd_displays(args):
         return
 
     print(f"{'ID':<12} {'Resolution':<16} {'Role'}")
-    print(f"{'─' * 12} {'─' * 16} {'─' * 11}")
+    print(dim(f"{'─' * 12} {'─' * 16} {'─' * 11}"))
     for d in displays:
         res = f"{d['width']}x{d['height']}"
-        label = "(primary)" if d.get("primary") else "(secondary)"
+        label = bold("(primary)") if d.get("primary") else "(secondary)"
         print(f"{d['id']:<12} {res:<16} {label}")
 
 
@@ -627,25 +638,25 @@ def cmd_bootstrap(args):
     print("Installing Python dependencies...")
     result = subprocess.run(["uv", "sync"], cwd=project_dir)
     if result.returncode != 0:
-        print("Error: uv sync failed", file=sys.stderr)
+        print(f"{error('Error:')} uv sync failed", file=sys.stderr)
         sys.exit(1)
-    print("Python dependencies OK\n")
+    print(f"Python dependencies {success('OK')}\n")
 
     # Step 2: Build Swift helper
     print("Building Swift helper...")
     if not os.path.isdir(swift_dir):
-        print(f"Error: swift directory not found at {swift_dir}", file=sys.stderr)
+        print(f"{error('Error:')} swift directory not found at {swift_dir}", file=sys.stderr)
         sys.exit(1)
     result = subprocess.run(["swift", "build", "-c", "release"], cwd=swift_dir)
     if result.returncode != 0:
-        print("Error: Swift build failed", file=sys.stderr)
+        print(f"{error('Error:')} Swift build failed", file=sys.stderr)
         sys.exit(1)
-    print("Swift helper OK\n")
+    print(f"Swift helper {success('OK')}\n")
 
     # Step 3: Ensure models directory exists
     models_dir = os.path.expanduser("~/.config/bsafe/models")
     os.makedirs(models_dir, exist_ok=True)
-    print(f"Models directory: {models_dir} OK\n")
+    print(f"Models directory: {models_dir} {success('OK')}\n")
 
     # Step 4: Create config file if it doesn't exist
     config_path = CONFIG_PATH
@@ -653,7 +664,7 @@ def cmd_bootstrap(args):
         os.makedirs(os.path.dirname(config_path), exist_ok=True)
         with open(config_path, "w") as f:
             f.write(generate_default_config())
-        print(f"Config file: {config_path} CREATED\n")
+        print(f"Config file: {config_path} {success('CREATED')}\n")
     else:
         print(f"Config file: {config_path} already exists, skipping\n")
 
@@ -670,34 +681,34 @@ def cmd_doctor(args):
     version = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
     print(f"Python version: {version}", end="")
     if sys.version_info >= (3, 14):
-        print(" OK")
+        print(f" {success('OK')}")
     else:
-        print(" WARN: expected >= 3.14")
+        print(f" {warn('WARN')}: expected >= 3.14")
         all_ok = False
 
     # macOS platform
     print(f"Platform: {sys.platform}", end="")
     if sys.platform == "darwin":
-        print(" OK")
+        print(f" {success('OK')}")
     else:
-        print(" WARN: bsafe requires macOS")
+        print(f" {warn('WARN')}: bsafe requires macOS")
         all_ok = False
 
     # Config file (informational only)
     print(f"Config file: {CONFIG_PATH}", end="")
     if os.path.exists(CONFIG_PATH):
-        print(" OK")
+        print(f" {success('OK')}")
     else:
-        print(" NOT FOUND (optional — run bootstrap to create)")
+        print(f" {warn('NOT FOUND')} (optional — run bootstrap to create)")
 
     # NudeNet importable
     print("NudeNet: ", end="")
     try:
         import nudenet  # noqa: F401
 
-        print("OK")
+        print(success("OK"))
     except ImportError:
-        print("NOT FOUND — run: uv sync")
+        print(f"{warn('NOT FOUND')} — run: uv sync")
         all_ok = False
 
     # Swift helper binary
@@ -706,9 +717,9 @@ def cmd_doctor(args):
 
     helper = find_helper()
     if helper:
-        print(f"OK ({helper})")
+        print(f"{success('OK')} ({helper})")
     else:
-        print("NOT FOUND — build with: cd swift && swift build -c release")
+        print(f"{warn('NOT FOUND')} — build with: cd swift && swift build -c release")
         all_ok = False
 
     # Screen Recording permission
@@ -723,15 +734,15 @@ def cmd_doctor(args):
             timeout=10,
         )
         if result.returncode == 0 and "SCREEN_RECORDING_OK" in result.stdout:
-            print("OK")
+            print(success("OK"))
         else:
             print(
-                "NOT GRANTED — open System Settings > Privacy & Security > Screen Recording "
+                f"{warn('NOT GRANTED')} — open System Settings > Privacy & Security > Screen Recording "
                 "and enable your terminal app"
             )
             all_ok = False
     else:
-        print("SKIPPED (Swift helper not found)")
+        print(f"{warn('SKIPPED')} (Swift helper not found)")
         all_ok = False
 
     if not all_ok:
@@ -814,6 +825,23 @@ def _build_parser():
     return parser, start_parser, video_parser, image_parser
 
 
+class _DetectionColorFilter(logging.Filter):
+    """Color [detection] prefixes magenta in verbose log output."""
+
+    def filter(self, record):
+        from bsafe.style import detection
+
+        if record.msg and "[detection]" in str(record.msg):
+            record.msg = record.msg.replace("[detection]", detection("[detection]"), 1)
+        return True
+
+
+def _add_detection_filter():
+    """Add detection coloring filter to the bsafe logger."""
+    bsafe_logger = logging.getLogger("bsafe")
+    bsafe_logger.addFilter(_DetectionColorFilter())
+
+
 def main():
     from bsafe.config import load_config
 
@@ -836,6 +864,7 @@ def main():
 
     if getattr(args, "verbose", False):
         logging.basicConfig(level=logging.DEBUG)
+        _add_detection_filter()
     else:
         logging.basicConfig(level=logging.WARNING)
 

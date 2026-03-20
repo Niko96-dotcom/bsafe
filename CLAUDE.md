@@ -43,6 +43,25 @@ This project targets Python >= 3.14. Some syntax that was invalid or had differe
 
 Trust ruff's formatting output for 3.14-era syntax questions.
 
+## CLI output style
+
+`bsafe/style.py` is the single source for all terminal styling. Semantic helpers:
+
+- `dim()` — config lines, timestamps, secondary info
+- `bold()` — status transitions, output paths, model names
+- `error()` — red, only for "Error:" prefixes or failure markers
+- `warn()` — yellow, only for "Warning:" or "WARN"/"NOT FOUND" tokens
+- `success()` — green, "OK", "Saved", completion counts
+- `info()` — cyan, chunk labels, file counts, timing durations
+- `detection()` — magenta, `[detection]` log prefix in verbose mode
+- `timestamp()` — dim `[HH:MM:SS]` string
+
+Rules:
+- Never color full lines — only short tokens get colored.
+- Keep file paths uncolored (use `bold()` for emphasis on input/output paths, not color).
+- Respect `NO_COLOR` env var and non-TTY output (auto-detected by `_color_enabled()`).
+- No external dependencies — pure ANSI escape codes only.
+
 ## Privacy
 
 Screen data is personal data. Strict rules:

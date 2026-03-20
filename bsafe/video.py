@@ -14,6 +14,8 @@ import time
 
 import cv2
 
+from bsafe.style import bold, dim, error, info, success, timestamp, warn
+
 from bsafe.censor import (
     FULL_CENSOR_MULTIPLIER,
     CensorConfig,
@@ -208,7 +210,7 @@ def _process_chunk(
                 if not memory_warned and mem_mb > _MEMORY_HIGH_MB:
                     memory_warned = True
                     print(
-                        f"\n  Warning: high memory usage ({mem_mb:.0f} MB)",
+                        f"\n  {warn('Warning:')} high memory usage ({mem_mb:.0f} MB)",
                         file=sys.stderr,
                         flush=True,
                     )
@@ -528,8 +530,8 @@ def process_video(
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     cap.release()
 
-    print(f"Input: {input_path}")
-    print(f"  {width}x{height}, {native_fps:.1f} FPS, {total_frames} frames")
+    print(f"Input: {bold(input_path)}")
+    print(dim(f"  {width}x{height}, {native_fps:.1f} FPS, {total_frames} frames"))
 
     detect_every = 1
     if fps_override and fps_override < native_fps:
@@ -547,12 +549,12 @@ def process_video(
     total_chunks = (total_frames + frames_per_chunk - 1) // frames_per_chunk
     last_chunk_size = total_frames - (frames_per_chunk * (total_chunks - 1))
 
-    print(f"  Processing in {total_chunks} chunks of {frames_per_chunk} frames")
+    print(f"  Processing in {info(str(total_chunks))} chunks of {frames_per_chunk} frames")
     print(
-        f"  Chunks are saved to: {chunks_dir}\n"
-        f"  If the process is killed (e.g. by the OS due to high memory usage),\n"
-        f"  re-run the same command to resume. Completed chunks will be skipped.\n"
-        f"  All chunks are combined into the final output at the end."
+        f"  {dim('Chunks are saved to:')} {chunks_dir}\n"
+        f"  {dim('If the process is killed (e.g. by the OS due to high memory usage),')}\n"
+        f"  {dim('re-run the same command to resume. Completed chunks will be skipped.')}\n"
+        f"  {dim('All chunks are combined into the final output at the end.')}"
     )
 
     # Check for completed chunks from a previous run
@@ -566,7 +568,7 @@ def process_video(
     # SIGTERM handler
     def _sigterm_handler(signum, _frame):
         print(
-            f"\n  Killed by signal {signum} (possible out-of-memory).\n"
+            f"\n  {error('Killed')} by signal {signum} (possible out-of-memory).\n"
             f"  Completed chunks are saved in: {chunks_dir}\n"
             f"  Re-run the same command to resume.\n"
             f"  To reduce memory, try a smaller --chunk-frames value.",
@@ -609,7 +611,7 @@ def process_video(
 
             for attempt in range(1, _MAX_CHUNK_RETRIES + 1):
                 print(
-                    f"\n  Chunk {chunk_idx + 1}/{total_chunks} — loading model...",
+                    f"\n  {timestamp()} {info(f'Chunk {chunk_idx + 1}/{total_chunks}')} — loading model...",
                     flush=True,
                 )
 
@@ -627,7 +629,7 @@ def process_video(
 
                 if attempt < _MAX_CHUNK_RETRIES:
                     print(
-                        f"\n  Chunk {chunk_idx + 1} failed (exit code {exit_code}), "
+                        f"\n  {warn('Warning:')} Chunk {chunk_idx + 1} failed (exit code {exit_code}), "
                         f"retry {attempt + 1}/{_MAX_CHUNK_RETRIES}...",
                         file=sys.stderr,
                         flush=True,
@@ -645,9 +647,9 @@ def process_video(
 
     except Exception as exc:
         print(
-            f"\n  Error: {exc}\n"
-            f"  Completed chunks saved in: {chunks_dir}\n"
-            f"  Re-run the same command to resume.",
+            f"\n  {error('Error:')} {exc}\n"
+            f"  {dim('Completed chunks saved in:')} {chunks_dir}\n"
+            f"  {dim('Re-run the same command to resume.')}",
             flush=True,
         )
         raise
@@ -655,15 +657,15 @@ def process_video(
         signal.signal(signal.SIGTERM, prev_sigterm)
 
     elapsed = time.monotonic() - t_start
-    print(f"\n  Processed in {_fmt_duration(elapsed)}")
+    print(f"\n  {timestamp()} {success('Processed')} in {info(_fmt_duration(elapsed))}")
 
     # Concatenate chunks + mux audio
-    print("  Assembling final video (combining all chunks)...", flush=True)
+    print("\n  Assembling final video (combining all chunks)...", flush=True)
     try:
         _concat_chunks(chunks_dir, total_chunks, output_path, input_path)
     except RuntimeError:
         print(
-            f"\n  Assembly failed. Chunks are preserved in: {chunks_dir}\n"
+            f"\n  {error('Error:')} Assembly failed. Chunks are preserved in: {chunks_dir}\n"
             f"  Re-run the same command to retry.",
             flush=True,
         )
@@ -672,5 +674,5 @@ def process_video(
     # Clean up chunks directory
     shutil.rmtree(chunks_dir, ignore_errors=True)
 
-    print(f"Output: {output_path}")
+    print(f"Output: {bold(output_path)}")
     return output_path

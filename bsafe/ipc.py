@@ -6,6 +6,8 @@ import queue
 import socket
 import threading
 
+from bsafe.style import timestamp
+
 from bsafe.protocol import (
     CMD_SHUTDOWN,
     MSG_FRAME,
@@ -96,7 +98,7 @@ class FrameServer:
                     try:
                         self.frame_queue.put_nowait((meta, jpeg_data))
                     except queue.Full:
-                        logger.warning("Frame queue full, dropping frame")
+                        logger.warning("%s Frame queue full, dropping frame", timestamp())
                 else:
                     logger.debug("Ignoring message type 0x%02x", msg_type)
 
