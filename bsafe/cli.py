@@ -190,6 +190,8 @@ def _print_config(args):
     ]
     if extras:
         parts.append(f"extras={','.join(extras)}")
+    if hasattr(args, "enhance") and args.enhance:
+        parts.append(f"enhance={args.enhance}")
     print(f"{dim('Config:')} {', '.join(parts)}", flush=True)
 
 
@@ -474,6 +476,7 @@ def cmd_video(args):
         model=args.model,
         chunk_frames=args.chunk_frames,
         verbose=args.verbose,
+        enhance=args.enhance,
     )
 
     if len(inputs) == 1:
@@ -801,6 +804,12 @@ def _build_parser():
         default=None,
         help="Frames per processing chunk (default: 5000). "
         "Smaller chunks use less memory but add brief tracking gaps at boundaries.",
+    )
+    video_parser.add_argument(
+        "--enhance",
+        choices=["dim"],
+        default=None,
+        help="enhancement mode: 'dim' for low-light footage (default: disabled)",
     )
     _add_censor_args(video_parser)
     _add_temporal_args(video_parser)

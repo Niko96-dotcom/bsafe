@@ -1,5 +1,7 @@
 """Video processing pipeline: read a video file, run detection, write censored output."""
 
+from __future__ import annotations
+
 import ctypes
 import ctypes.util
 import gc
@@ -11,6 +13,10 @@ import signal
 import subprocess
 import sys
 import time
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from bsafe.enhance import WindowIndex
 
 import cv2
 
@@ -149,6 +155,7 @@ def _process_chunk(
     model: str | None,
     total_frames: int,
     t_start: float,
+    enhance_index: WindowIndex | None = None,
 ) -> None:
     """Process a single chunk of frames."""
     cap = cv2.VideoCapture(input_path)
@@ -169,6 +176,9 @@ def _process_chunk(
         cap.release()
         detector.close()
         raise RuntimeError(f"cannot create chunk writer: {chunk_output}")
+
+    if enhance_index is not None:
+        from bsafe.enhance import enhance_frame
 
     last_progress = 0.0
     memory_warned = False
@@ -192,8 +202,13 @@ def _process_chunk(
             else:
                 detected_boxes = []
 
+            if enhance_index is not None:
+                gamma, contrast, sat = enhance_index.lookup(global_frame)
+                enhance_frame(frame, gamma, contrast, sat)
+
             boxes = tracker.update(0, detected_boxes)
             render_censors(frame, boxes, blur=blur, pixels=pixels, censor_text=censor_text)
+
             writer.write(frame)
 
             # Progress every ~0.5s
@@ -485,6 +500,7 @@ def process_video(
     model: str | None = None,
     chunk_frames: int | None = None,
     verbose: bool = False,
+    enhance: str | None = None,
 ) -> str:
     """Process a video file and write a censored copy.
 
@@ -545,6 +561,24 @@ def process_video(
     chunks_dir = f"{stem}.{model_tag}.bsafe.chunks"
     os.makedirs(chunks_dir, exist_ok=True)
 
+    # --- Low-light enhancement (pre-scan + denoise) ---
+    enhance_window_index: WindowIndex | None = None
+    chunk_input_path = input_path  # may be replaced by denoised path
+
+    if enhance == "dim":
+        from bsafe.enhance import prescan_video, denoise_video
+
+        print(f"  Pre-scanning for {bold('dim-light')} enhancement...", flush=True)
+        enhance_window_index = prescan_video(input_path, native_fps, total_frames)
+
+        if enhance_window_index.all_skip:
+            print(f"  Footage is already bright — {dim('skipping enhancement')}")
+            enhance_window_index = None
+        else:
+            denoised_path = os.path.join(chunks_dir, "denoised.mp4")
+            if denoise_video(input_path, denoised_path):
+                chunk_input_path = denoised_path
+
     # Calculate chunk boundaries
     total_chunks = (total_frames + frames_per_chunk - 1) // frames_per_chunk
     last_chunk_size = total_frames - (frames_per_chunk * (total_chunks - 1))
@@ -587,7 +621,7 @@ def process_video(
             chunk_file = _chunk_path(chunks_dir, chunk_idx)
 
             chunk_kwargs = dict(
-                input_path=input_path,
+                input_path=chunk_input_path,
                 chunk_output=chunk_file,
                 start_frame=start_frame,
                 num_frames=expected,
@@ -607,6 +641,7 @@ def process_video(
                 model=model,
                 total_frames=total_frames,
                 t_start=t_start,
+                enhance_index=enhance_window_index,
             )
 
             for attempt in range(1, _MAX_CHUNK_RETRIES + 1):

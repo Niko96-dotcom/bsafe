@@ -71,6 +71,7 @@ bsafe video clip.mp4 --blur           # blur instead of black boxes
 bsafe video clip.mp4 --pixels         # pixelation effect
 bsafe video clip.mp4 --censor-text    # overlay "NSFW" text
 bsafe video clip.mp4 --fps 5          # run detection at 5 FPS (output keeps native FPS)
+bsafe video clip.mp4 --enhance dim    # low-light enhancement (denoise + adaptive gamma)
 ```
 
 Process multiple files at once (shell globs work):
@@ -146,6 +147,7 @@ Shared flags (work with both `start` and `video`):
 - `-o` / `--output PATH` — output file path (default: `<input>.<model>.bsafe.<ext>`)
 - `--fps N` — detection FPS override (default: native video FPS)
 - `--chunk-frames N` — frames per processing chunk (default: 5000). Smaller chunks use less memory but may cause brief tracking gaps at chunk boundaries.
+- `--enhance dim` — low-light enhancement for dim-but-visible footage. Pre-scans the video, applies FFmpeg temporal denoising (`hqdn3d`), then adaptive per-frame gamma/contrast correction. Automatically skips enhancement for already-bright footage. Requires `ffmpeg` for denoising (enhancement still works without it).
 
 ### Detection models
 

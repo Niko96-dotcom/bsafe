@@ -206,6 +206,63 @@ def test_concat_chunks_raises_on_all_ffmpeg_failures(tmp_path):
                 _concat_chunks(chunks_dir, 2, str(tmp_path / "out.mp4"), input_path)
 
 
+def test_process_video_with_enhance_dim(tmp_path, mock_detector):
+    """Enhancement should run on a dark video and produce output."""
+    path = str(tmp_path / "dark.mp4")
+    # Create a dark video (pixel value 30)
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    writer = cv2.VideoWriter(path, fourcc, 10.0, (64, 64))
+    for _ in range(10):
+        frame = np.full((64, 64, 3), 30, dtype=np.uint8)
+        writer.write(frame)
+    writer.release()
+
+    with patch("bsafe.enhance.shutil.which", return_value=None):
+        output = process_video(path, enhance="dim")
+    assert os.path.exists(output)
+
+    # Verify output frames are brighter than input
+    cap = cv2.VideoCapture(output)
+    ret, frame = cap.read()
+    cap.release()
+    assert ret
+    mean_luma = float(np.mean(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)))
+    assert mean_luma > 30  # should be brighter than the input value of 30
+
+
+def test_enhance_bright_video_skips_entirely(tmp_path, mock_detector):
+    """Bright video with enhance='dim' should skip enhancement and denoise."""
+    path = str(tmp_path / "bright.mp4")
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    writer = cv2.VideoWriter(path, fourcc, 10.0, (64, 64))
+    for _ in range(10):
+        frame = np.full((64, 64, 3), 180, dtype=np.uint8)
+        writer.write(frame)
+    writer.release()
+
+    with patch("bsafe.enhance.denoise_video") as mock_denoise:
+        output = process_video(path, enhance="dim")
+        # Bright footage → all_skip=True → denoise should never be called
+        mock_denoise.assert_not_called()
+    assert os.path.exists(output)
+
+
+def test_enhance_dim_calls_denoise_when_available(tmp_path, mock_detector):
+    """Dark video with enhance='dim' should attempt denoise."""
+    path = str(tmp_path / "dark.mp4")
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    writer = cv2.VideoWriter(path, fourcc, 10.0, (64, 64))
+    for _ in range(10):
+        frame = np.full((64, 64, 3), 30, dtype=np.uint8)
+        writer.write(frame)
+    writer.release()
+
+    with patch("bsafe.enhance.denoise_video", return_value=False) as mock_denoise:
+        output = process_video(path, enhance="dim")
+        mock_denoise.assert_called_once()
+    assert os.path.exists(output)
+
+
 def test_concat_chunks_raises_on_timeout(tmp_path):
     """RuntimeError should be raised when ffmpeg times out."""
     chunks_dir = str(tmp_path / "chunks")

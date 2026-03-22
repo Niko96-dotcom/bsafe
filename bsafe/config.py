@@ -25,7 +25,7 @@ _COMMON_KEYS = {
 
 VALID_KEYS = {
     "start": {"fps", "dry_run", "display"} | _COMMON_KEYS,
-    "video": {"fps", "chunk_frames"} | _COMMON_KEYS,
+    "video": {"fps", "chunk_frames", "enhance"} | _COMMON_KEYS,
     "image": _COMMON_KEYS.copy(),
     "common": _COMMON_KEYS,
 }
@@ -46,6 +46,7 @@ dry_run = false
 [video]
 # fps =              # unset = use native video FPS
 # chunk_frames =     # unset = 5000
+# enhance =          # unset = disabled. Options: dim
 # model =            # override [common] model for video processing
 
 [image]
