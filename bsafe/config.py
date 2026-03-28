@@ -55,6 +55,7 @@ dry_run = false
 
 [common]
 # confidence =       # unset = 0.0 for NudeNet, 0.2 for EraX
+# censor = "all"       # Options: none, female, male, all
 censor = "all"
 padding = 0.0
 persist_frames = 8

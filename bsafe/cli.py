@@ -26,9 +26,9 @@ def _add_censor_args(parser):
     )
     parser.add_argument(
         "--censor",
-        choices=["female", "male", "all"],
+        choices=["none", "female", "male", "all"],
         default="all",
-        help="What to censor: female, male, or all (default: all)",
+        help="What to censor: none, female, male, or all (default: all)",
     )
     parser.add_argument(
         "--padding",

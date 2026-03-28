@@ -117,7 +117,7 @@ Sections: `[start]` for start-only flags, `[video]` for video-only flags,
 Shared flags (work with both `start` and `video`):
 
 - `--confidence N` — minimum detection confidence, 0.0–1.0 (default: 0.0 for NudeNet, 0.2 for EraX)
-- `--censor {female,male,all}` — what to censor (default: all)
+- `--censor {none,female,male,all}` — what to censor (default: all). Use `none` to skip nudity censoring while still using additive flags like `--face-male`
 - `--padding N` — box expansion fraction (default: 0.0)
 - `--persist-frames N` — frames a box persists after disappearing (default: 8)
 - `--smooth-alpha N` — EMA smoothing weight, 0.0–1.0 (default: 0.5)

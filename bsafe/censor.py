@@ -11,6 +11,7 @@ FULL_CENSOR_MULTIPLIER = 3
 # BUTTOCKS_EXPOSED is intentionally excluded — too many false positives in practice
 # (e.g. tight clothing, seated posture) and low user-reported value for censoring.
 CENSOR_PRESETS: dict[str, frozenset[str]] = {
+    "none": frozenset(),
     "female": frozenset(
         {
             "FEMALE_GENITALIA_EXPOSED",
@@ -70,7 +71,7 @@ def resolve_censor_classes(
             f"unknown censor preset '{preset}'. Known presets: {', '.join(sorted(CENSOR_PRESETS))}"
         )
     classes = set(CENSOR_PRESETS[preset])
-    if covered:
+    if covered and preset != "none":
         classes.update({"ANUS_COVERED", "BUTTOCKS_COVERED"})
         # Male breast is considered SFW in most cultures, so only add female breast covered.
         if preset in ("female", "all"):

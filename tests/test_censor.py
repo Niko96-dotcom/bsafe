@@ -181,8 +181,35 @@ def test_full_censor_multiplier_value():
 
 
 def test_resolve_no_extra_flags_matches_preset():
-    for preset in ("female", "male", "all"):
+    for preset in ("none", "female", "male", "all"):
         assert resolve_censor_classes(preset) == CENSOR_PRESETS[preset]
+
+
+def test_resolve_none_returns_empty():
+    assert resolve_censor_classes("none") == frozenset()
+
+
+def test_resolve_none_with_face_flags():
+    result = resolve_censor_classes("none", face_male=True)
+    assert result == frozenset({"FACE_MALE"})
+
+    result = resolve_censor_classes("none", face_female=True)
+    assert result == frozenset({"FACE_FEMALE"})
+
+
+def test_resolve_none_with_feet():
+    result = resolve_censor_classes("none", feet=True)
+    assert result == frozenset({"FEET_EXPOSED"})
+
+
+def test_resolve_none_covered_ignored():
+    result = resolve_censor_classes("none", covered=True)
+    assert result == frozenset()
+
+
+def test_resolve_none_combined_additive_flags():
+    result = resolve_censor_classes("none", face_male=True, face_female=True, feet=True)
+    assert result == frozenset({"FACE_MALE", "FACE_FEMALE", "FEET_EXPOSED"})
 
 
 def test_resolve_covered_female():
