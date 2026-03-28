@@ -210,6 +210,40 @@ bsafe image photo.jpg --model erax-small
 bsafe video clip.mp4 --model erax-medium
 ```
 
+## Privacy & censor strength
+
+**Real-time screen mode** (`bsafe start`) draws a transparent overlay window on
+top of your screen. It does not modify the underlying applications or websites
+in any way — censoring is purely visual and disappears when bsafe stops.
+
+**Video and image modes** (`bsafe video`, `bsafe image`) produce new files with
+the censored pixels baked into the output. The original file is never modified.
+However, not all censor styles destroy information equally:
+
+- **Black boxes** (default) replace every pixel in the censored region with
+  solid black. The original data is completely destroyed — recovery is
+  impossible regardless of technique or computing power.
+- **Blur** (`--blur`) applies a Gaussian blur that removes high-frequency
+  detail. At default or higher intensity this is practically irreversible, but
+  the exact kernel parameters are deterministic from the box dimensions and
+  intensity (both visible or inferable from the output). At low intensity,
+  deconvolution techniques can partially recover edges and shapes.
+- **Pixelation** (`--pixels`) downscales each region and scales it back up,
+  producing uniform color blocks. Each block preserves the average color of the
+  original pixels, retaining more information than the other modes. Published
+  machine-learning attacks have demonstrated recovering recognizable faces and
+  text from pixelated images. This is the weakest censor mode.
+
+If your priority is ensuring censored content cannot be recovered from the
+output file, use black boxes (the default). If you use blur or pixelation for
+aesthetic reasons, consider using higher intensity values (e.g. `--blur 3`,
+`--pixels 3`) to reduce the amount of recoverable information.
+
+When using `--fps` to skip detection frames in video mode, content that first
+appears between detection frames will go uncensored for a few frames until the
+next detection cycle picks it up. The default `--persist-frames` setting keeps
+boxes active across gaps, but cannot predict content that hasn't been seen yet.
+
 ## License
 
 Under [MIT License](./LICENSE).
