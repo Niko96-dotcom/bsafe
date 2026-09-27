@@ -18,9 +18,6 @@ class ModelInfo(NamedTuple):
 
 DEFAULT_MODEL = "320n"
 
-DEFAULT_INFERENCE_RESOLUTION = 320
-INFERENCE_RESOLUTIONS = (320, 640, 960)
-
 KNOWN_MODELS: dict[str, ModelInfo] = {
     "320n": ModelInfo(backend="nudenet", path=None),
     "640m": ModelInfo(backend="nudenet", path="~/.config/bsafe/models/640m.onnx"),
@@ -60,6 +57,7 @@ ERAX_UNSUPPORTED_FLAGS: dict[str, str] = {
     "face_male": "--face-male",
     "face_female": "--face-female",
     "feet": "--feet",
+    "buttocks": "--buttocks",
 }
 
 
@@ -107,22 +105,14 @@ class Detection:
 
 
 class _NudeNetBackend:
-    def __init__(
-        self,
-        min_confidence: float,
-        model_path: str | None,
-        inference_resolution: int = DEFAULT_INFERENCE_RESOLUTION,
-    ):
+    def __init__(self, min_confidence: float, model_path: str | None):
         from nudenet import NudeDetector
 
         self.min_confidence = min_confidence
-        self.inference_resolution = inference_resolution
         if model_path:
-            self._detector = NudeDetector(
-                model_path=model_path, inference_resolution=inference_resolution
-            )
+            self._detector = NudeDetector(model_path=model_path)
         else:
-            self._detector = NudeDetector(inference_resolution=inference_resolution)
+            self._detector = NudeDetector()
         tmp = tempfile.NamedTemporaryFile(suffix=".jpg", prefix="bsafe-det-", delete=False)
         self._tmp_path = tmp.name
         tmp.close()
@@ -219,28 +209,14 @@ class _EraXBackend:
 class Detector:
     """Unified detector: delegates to NudeNet or EraX backend."""
 
-    def __init__(
-        self,
-        min_confidence: float | None = None,
-        model: str | None = None,
-        inference_resolution: int = DEFAULT_INFERENCE_RESOLUTION,
-    ):
-        if inference_resolution not in INFERENCE_RESOLUTIONS:
-            raise ValueError(
-                f"unsupported inference resolution {inference_resolution}. "
-                f"Allowed: {', '.join(str(r) for r in INFERENCE_RESOLUTIONS)}"
-            )
+    def __init__(self, min_confidence: float | None = None, model: str | None = None):
         info = resolve_model(model)
         if min_confidence is None:
             min_confidence = 0.2 if info.backend == "erax" else 0.0
         if info.backend == "erax":
-            if inference_resolution != DEFAULT_INFERENCE_RESOLUTION:
-                raise ValueError(
-                    "--inference-resolution is NudeNet-only and has no effect with EraX models"
-                )
             self._backend = _EraXBackend(min_confidence, info.path)
         else:
-            self._backend = _NudeNetBackend(min_confidence, info.path, inference_resolution)
+            self._backend = _NudeNetBackend(min_confidence, info.path)
         logger.info(
             "Detector initialized (model=%s, backend=%s)", model or DEFAULT_MODEL, info.backend
         )

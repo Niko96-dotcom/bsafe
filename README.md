@@ -117,10 +117,10 @@ Sections: `[start]` for start-only flags, `[video]` for video-only flags,
 Shared flags (work with both `start` and `video`):
 
 - `--confidence N` — minimum detection confidence, 0.0–1.0 (default: 0.0 for NudeNet, 0.2 for EraX)
-- `--censor {none,female,male,all}` — what to censor (default: all). Use `none` to skip nudity censoring while still using additive flags like `--face-male`
+- `--censor {none,female,male,all,body}` — what to censor (default: all). `body` censors every exposed body part except faces (adds buttocks, feet, belly, armpits and male chest to `all`). Use `none` to skip nudity censoring while still using additive flags like `--face-male`
 - `--padding N` — box expansion fraction (default: 0.0)
-- `--persist-frames N` — frames a box persists after disappearing (default: 8)
-- `--smooth-alpha N` — EMA smoothing weight, 0.0–1.0 (default: 0.5)
+- `--persist-frames N` — frames a box persists after disappearing (default: 8). In live `start` these are detection passes, and a box also stays at least 1.0 s after its last detection
+- `--smooth-alpha N` — EMA smoothing weight for `video` box tracking, 0.0–1.0 (default: 0.5). Live `start` ignores it (see "How live mode works")
 - `--blur [N]` — blur effect (default intensity: 1.0)
 - `--pixels [N]` — pixelation effect (default intensity: 1.0)
 - `--censor-text [TEXT]` — overlay text on censored regions (default: "NSFW")
@@ -129,54 +129,55 @@ Shared flags (work with both `start` and `video`):
 - `--face-male` — also censor male faces
 - `--face-female` — also censor female faces
 - `--feet` — also censor exposed feet
+- `--buttocks` — also censor exposed buttocks (off by default: more false positives, e.g. tight clothing)
 - `--full-censor` — expand censor area by 3x
 - `-v` / `--verbose` — enable debug logging
 
 `start`-only flags:
 
-- `--fps N` — capture frames per second (default: 45)
+- `--fps N` — capture FPS; up to the display refresh rate, e.g. 120 on ProMotion (default: 60)
 - `--display VALUE` — display to capture: `primary`, `secondary`, `all`, or numeric ID (default: `primary`)
 - `--dry-run` — run the loop without the Swift helper or detector
-- `--max-frame-age-ms N` — drop results older than this receipt-to-send budget in ms (default: 250, `0` disables). Stale drops clear that display's overlay and tracking state
-- `--stats` — log live aggregate receive-to-send/queue/inference ages, replacement and stale counts every ~2s plus a shutdown summary (no frames/images saved)
-- `--inference-resolution {320,640,960}` — NudeNet input resolution (default: 320). Higher values recall smaller regions at higher CPU cost. NudeNet-only; rejected with EraX
-- `--detail-scan` — NudeNet-only: full frame plus overlapping 2x2 tiles, remapped and class-aware deduped. More recall for small content at ~5x CPU cost. Rejected with EraX
-- `--motion-compensation` — map inference boxes to the newest same-display pending frame via translation-only motion compensation before sending. More responsive under load at higher CPU cost. Off by default; tracker state stays in inference-frame coordinates
-- `--motion-lookahead-ms N` — experimental, off by default (`0`). Extrapolates the measured motion shift beyond the pending frame by `N` ms (range `0`–`100`, requires `--motion-compensation`). May overshoot or reverse on direction changes; prefer small values
+- `--stats` — log live detection timing every ~2s plus native capture/tracking stats
+- `--detect-scale N` — detection resolution as a multiple of the display's point size (default 1.0). 1.5 detects images down to ~100 pt wide at ~2x GPU cost
+- `--min-padding N` — minimum padding in capture pixels per side, added to small boxes (default: 0). Units are the capture size printed at startup (`Display 1: capturing 1728x1117 px`). Small detections carry most of the leaked area and proportional `--padding` barely grows them: on scrolling X feed recordings at live capture size, a 24 px floor cut leak by up to 20% for about +0.15% of screen over-censor
+- `--extra-scales LIST` — extra detection passes at these multiples of point size, e.g. `0.5` or `0.5,0.75` (each must be < `--detect-scale`; default `0.5` for NudeNet, `none` to disable). The 320n model was trained at 320 px input and misses large close-ups full-frame at native 1728 px: one extra 0.5x pass cut leak vs a 640m oracle from 18.9% to 10.3% (feet), 50.7% to 32.5% (armpits), 17.5% to 16.5% (butt) for ~+5 ms per frame. Strict mode: `bsafe start --detect-scale 1.5` keeps the extra 0.5 pass and additionally halves small-object misses at ~2x total cost. NudeNet-only (warned and ignored with EraX)
 
-### Live latency vs detail
+### How live mode works
 
-Screen overlays react after content appears — bsafe cannot guarantee prevention
-before content is briefly visible.
+Each display is captured natively and every captured frame feeds a native
+per-display tracker (`BsafeCore`, pure Swift) that moves existing censor boxes
+with the content and re-renders the overlay at capture rate, extended along the
+motion direction to cover display latency.
 
-- The live path keeps only the latest frame per display (fair across displays;
-  a busy monitor cannot starve a quiet one) and drops results older than
-  `--max-frame-age-ms` (default 250 ms receipt-through-processing budget).
-  Under continuous capture only age-based drops apply, so results are not
-  discarded merely because a newer frame exists.
-- `--stats` timings are local receive-to-send-start/queue/inference ages measured
-  with the local monotonic clock from frame receipt to overlay send start. This is
-  not capture-to-render latency (it excludes Swift capture, JPEG encode,
-  IPC transfer to Python, and overlay render). Averages are drawn-only
-  (stale frames excluded); interval `replaced` is the window delta while
-  shutdown totals are cumulative.
-- Detail tradeoffs: `--inference-resolution 640/960` enlarges the model's
-  input for smaller-region recall but slows every frame. `--detail-scan`
-  adds four overlapping tiles on top (1 full + 4 tile passes, deduped), which
-  further helps small content but roughly multiplies CPU cost. Prefer the
-  default 320 single-pass for scrolling and general use; enable higher
-  resolution/detail only when small-content recall matters more than
-  responsiveness.
-- `--motion-compensation` projects the current inference boxes onto the newest
-  same-display pending frame before sending, so overlays track motion during
-  inference. The staleness deadline is checked immediately before send and
-  includes compensation time; fresh results are never dropped merely because a
-  newer frame exists.
-- `--motion-lookahead-ms` is experimental and off by default. It extends the
-  measured shift proportionally to the pending-frame interval
-  (`lead_ratio = lookahead_s / delta`, clamped to `0`–`2`). Because it
-  extrapolates, fast direction changes can overshoot or briefly reverse — keep
-  it off unless residual lag is measured.
+Python grants one frame credit per display. Swift answers with the newest raw
+BGRA frame. Python runs full-frame NudeNet at the frame's native resolution on
+the GPU (ONNX Runtime CoreML EP, static shapes), builds censor boxes, and
+replies tagged with the frame `seq`. Swift catches the boxes up from `seq` to
+its newest frame and merges them into its tracks.
+
+`--detect-scale` trades resolution for GPU cost: it scales the capture as a
+multiple of the display's point size before detection. `1.0` is cheapest;
+`1.5` detects images down to ~100 pt wide at ~2x GPU cost (EraX models require
+`1.0`). The native tracker owns live tracking and persistence
+(`--persist-frames` tunes how many missed detection passes a track survives;
+a track is also kept for at least 1.0 s after its last match, so a fast detector
+cannot drop a box on a short miss). Python no longer smooths live boxes. When a
+new detection matches a track, each box edge that the detection moves outward
+snaps to it at once, and each edge it moves inward shrinks by a tenth of the
+difference per 0.1 s of detection time, independent of the detection rate. A detection that briefly comes back
+narrower (common while an image scrolls into view) therefore cannot uncover
+part of the region. `--smooth-alpha` does not apply to live mode.
+
+Suggested setup for a 120 Hz Mac:
+
+```sh
+bsafe start --fps 120 --detect-scale 1.5 --padding 0.4 --persist-frames 4
+```
+
+Limitation: an overlay reacts after content is drawn, so the first frames of
+newly appearing content can still be visible (typically a few tens of
+milliseconds), and detection quality depends on the model.
 
 `image`-only flags:
 
@@ -188,6 +189,70 @@ before content is briefly visible.
 - `--fps N` — detection FPS override (default: native video FPS)
 - `--chunk-frames N` — frames per processing chunk (default: 5000). Smaller chunks use less memory but may cause brief tracking gaps at chunk boundaries.
 - `--enhance dim` — low-light enhancement for dim-but-visible footage. Pre-scans the video, applies FFmpeg temporal denoising (`hqdn3d`), then adaptive per-frame gamma/contrast correction. Automatically skips enhancement for already-bright footage. Requires `ffmpeg` for denoising (enhancement still works without it).
+
+### Benchmark (dev)
+
+Frozen baselines live in `bench/baselines/` (metrics and config only; recordings stay
+local). `x-feed-2026-09-27.json` is the reference for the current live pipeline; compare
+new runs against it before changing detection or tracking defaults.
+
+`bsafe bench` replays a screen recording through the live tracker offline to
+measure leak vs. over-censor for different padding/tracker settings:
+
+```sh
+bsafe bench detect rec.mov -o bench/rec   # per-frame detections → dets.jsonl
+bsafe bench replay bench/rec              # boxes → Swift replay → score.json
+bsafe bench sweep bench/rec               # grid of configs → sweep.json table
+```
+
+Recordings are user-made and stay local. Record with Bsafe stopped (so no overlay is
+captured), then scale to the live capture size printed by `bsafe start`
+(e.g. 1728x1117 on a 3456x2234 Retina panel) with an even height, otherwise
+detection runs at a different resolution and latency than live:
+
+```sh
+ffmpeg -f avfoundation -capture_cursor 0 -framerate 60 -i "<screen>:none" -t 48 -r 60 -fps_mode cfr raw.mov
+ffmpeg -i raw.mov -vf scale=1728:1116:flags=area rec.mov
+```
+
+Use `bench replay --overhead-ms` to match live `avg_receive_to_send_ms` minus the
+offline detect time if they differ.
+The bench writes only detection metadata and box coordinates — never pixels,
+crops, or frames.
+
+Scoring: GT frames match the displayed line on screen at their pts (latest
+`display_pts` <= pts, including `event: apply` re-renders emitted at detection
+completion time). Over-censor averages over every displayed frame against the
+dilated GT of the nearest dets frame (empty GT counts fully as excess);
+per-class `over_censor_pct` is null (displayed boxes carry no class).
+Never-covered objects contribute their full span + 1 frame to `first_cover_ms`
+(median + `first_cover_p90_ms`). Frame pts come from `CAP_PROP_POS_MSEC`
+(first frame 0, fallback to index/fps); header fps is `(n-1)/last_pts`.
+
+To measure recall of the live detector, score against a stronger GT source
+with `--gt-dets` (repeatable; `--gt-conf` applies to all GT sources, default
+0.25). When given, GT is the union of the listed `dets.jsonl` files — the
+live `DIR/dets.jsonl` is NOT included unless listed — scaled to the live
+resolution and linked/gap-filled as usual. For example, run `bench detect
+--model 640m` on the full-resolution recording (plus `320n` for a second
+opinion) and replay the live-scale dir against both:
+
+```sh
+bsafe bench replay bench/rec --gt-dets bench/hires-640m/dets.jsonl --gt-dets bench/hires-320n/dets.jsonl
+bsafe bench sweep bench/rec --gt-dets bench/hires-640m/dets.jsonl
+```
+
+New recall metrics (overall and per class): `objects_missed_pct` (% of GT
+objects never covered) is the headline recall number, and
+`objects_missed_by_live_pct` (% of GT objects the live detections never saw
+with same-class IoU >= 0.1) separates "model never saw it" from
+"tracker/latency failed". `score.json` records `gt_sources` and `gt_conf`.
+
+To benchmark `--extra-scales`, run `bench detect --extra-scales 0.5` on a
+recording already scaled to the live capture size (factors here are
+frame-relative, and the header records them). To benchmark strict mode
+(`--detect-scale 1.5` with extra `0.5`), record/scale the recording to 1.5x
+the live size and use factor `0.333` (= 0.5 / 1.5).
 
 ### Detection models
 
@@ -201,7 +266,7 @@ The default `320n` model is bundled with NudeNet. Other models require a manual 
 | `erax-small` | EraX YOLO | ~40 MB | Balanced, mAP 0.453 |
 | `erax-medium` | EraX YOLO | ~19 MB | Best EraX accuracy, mAP 0.467 |
 
-NudeNet models have broader coverage (faces, covered parts, feet) and are lightweight —
+NudeNet models have broader coverage (faces, covered parts, feet, buttocks) and are lightweight —
 best for real-time `bsafe start`. EraX models are more targeted (e.g. nipple-specific)
 and heavier — better suited for `bsafe image` and `bsafe video` where FPS isn't a constraint.
 
