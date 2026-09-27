@@ -137,6 +137,40 @@ Shared flags (work with both `start` and `video`):
 - `--fps N` — capture frames per second (default: 45)
 - `--display VALUE` — display to capture: `primary`, `secondary`, `all`, or numeric ID (default: `primary`)
 - `--dry-run` — run the loop without the Swift helper or detector
+- `--max-frame-age-ms N` — drop results older than this receipt-to-send budget in ms (default: 250, `0` disables). Stale drops clear that display's overlay and tracking state
+- `--stats` — log live aggregate receive-to-send/queue/inference ages, replacement and stale counts every ~2s plus a shutdown summary (no frames/images saved)
+- `--inference-resolution {320,640,960}` — NudeNet input resolution (default: 320). Higher values recall smaller regions at higher CPU cost. NudeNet-only; rejected with EraX
+- `--detail-scan` — NudeNet-only: full frame plus overlapping 2x2 tiles, remapped and class-aware deduped. More recall for small content at ~5x CPU cost. Rejected with EraX
+- `--motion-compensation` — map inference boxes to the newest same-display pending frame via translation-only motion compensation before sending. More responsive under load at higher CPU cost. Off by default; tracker state stays in inference-frame coordinates
+
+### Live latency vs detail
+
+Screen overlays react after content appears — bsafe cannot guarantee prevention
+before content is briefly visible.
+
+- The live path keeps only the latest frame per display (fair across displays;
+  a busy monitor cannot starve a quiet one) and drops results older than
+  `--max-frame-age-ms` (default 250 ms receipt-through-processing budget).
+  Under continuous capture only age-based drops apply, so results are not
+  discarded merely because a newer frame exists.
+- `--stats` timings are local receive-to-send-start/queue/inference ages measured
+  with the local monotonic clock from frame receipt to overlay send start. This is
+  not capture-to-render latency (it excludes Swift capture, JPEG encode,
+  IPC transfer to Python, and overlay render). Averages are drawn-only
+  (stale frames excluded); interval `replaced` is the window delta while
+  shutdown totals are cumulative.
+- Detail tradeoffs: `--inference-resolution 640/960` enlarges the model's
+  input for smaller-region recall but slows every frame. `--detail-scan`
+  adds four overlapping tiles on top (1 full + 4 tile passes, deduped), which
+  further helps small content but roughly multiplies CPU cost. Prefer the
+  default 320 single-pass for scrolling and general use; enable higher
+  resolution/detail only when small-content recall matters more than
+  responsiveness.
+- `--motion-compensation` projects the current inference boxes onto the newest
+  same-display pending frame before sending, so overlays track motion during
+  inference. The staleness deadline is checked immediately before send and
+  includes compensation time; fresh results are never dropped merely because a
+  newer frame exists.
 
 `image`-only flags:
 

@@ -24,7 +24,17 @@ _COMMON_KEYS = {
 }
 
 VALID_KEYS = {
-    "start": {"fps", "dry_run", "display"} | _COMMON_KEYS,
+    "start": {
+        "fps",
+        "dry_run",
+        "display",
+        "max_frame_age_ms",
+        "stats",
+        "inference_resolution",
+        "detail_scan",
+        "motion_compensation",
+    }
+    | _COMMON_KEYS,
     "video": {"fps", "chunk_frames", "enhance"} | _COMMON_KEYS,
     "image": _COMMON_KEYS.copy(),
     "common": _COMMON_KEYS,
@@ -42,6 +52,11 @@ fps = 45
 display = "primary"
 dry_run = false
 # model =            # override [common] model for real-time screen censoring
+# max_frame_age_ms = 250  # drop results older than this receipt-to-send budget (0 = disable)
+# stats = false      # log live receive-to-send aggregate stats every ~2s (not capture-to-render)
+# inference_resolution = 320  # NudeNet input resolution. Options: 320, 640, 960
+# detail_scan = false  # NudeNet-only: full frame plus overlapping 2x2 tiles (more CPU)
+# motion_compensation = false  # map inference boxes to newest pending frame (more CPU)
 
 [video]
 # fps =              # unset = use native video FPS

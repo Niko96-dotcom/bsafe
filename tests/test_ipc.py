@@ -54,8 +54,8 @@ def test_frame_server_receives_frames(sock_path):
     frame_payload = _make_frame_payload()
     client.sendall(pack_message(MSG_FRAME, frame_payload))
 
-    # Wait for queue
-    meta, jpeg = server.frame_queue.get(timeout=2)
+    # Wait for queue (mailbox returns meta, jpeg, local receipt monotonic)
+    meta, jpeg, _receipt = server.frame_queue.get(timeout=2)
     assert meta.display_id == 1
     assert meta.width == 640
     assert meta.height == 480
@@ -110,7 +110,7 @@ def test_frame_server_send_censor(sock_path):
     # Send a frame so the server has a connected client
     frame_payload = _make_frame_payload()
     client.sendall(pack_message(MSG_FRAME, frame_payload))
-    server.frame_queue.get(timeout=2)
+    server.frame_queue.get(timeout=2)  # (meta, jpeg, receipt_mono)
 
     # Server sends censor command
     boxes = [(10, 20, 100, 200), (300, 400, 50, 60)]

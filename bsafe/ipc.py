@@ -1,12 +1,12 @@
-"""Unix domain socket server: receives frames from Swift helper into a queue."""
+"""Unix domain socket server: receives frames from Swift helper into a mailbox."""
 
 import logging
 import os
 import queue
 import socket
 import threading
-
-from bsafe.style import timestamp
+import time
+from collections import deque
 
 from bsafe.protocol import (
     CMD_SHUTDOWN,
@@ -20,6 +20,111 @@ from bsafe.protocol import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class FrameMailbox:
+    """Bounded latest-frame per-display mailbox.
+
+    Keeps at most one pending frame per display. A busy display replaces its
+    own pending frame instead of queuing behind (or ahead of) quiet displays,
+    so a busy monitor cannot starve a quiet one. Consumers take pending
+    displays in first-pending order (fair round-robin across displays).
+
+    Compatible subset of :class:`queue.Queue` used by live code:
+    ``get(block=True, timeout=None)``, ``get_nowait()``, ``put_nowait()``,
+    ``empty()``, ``qsize()``. ``get`` returns ``(meta, jpeg, receipt_mono)``
+    where ``receipt_mono`` is a local ``time.monotonic()`` timestamp taken on
+    receipt (never the cross-process Swift clock).
+    """
+
+    def __init__(self, maxsize: int = 10):
+        self.maxsize = maxsize
+        self._latest: dict[int, tuple] = {}
+        self._order: deque[int] = deque()
+        self._lock = threading.Lock()
+        self._not_empty = threading.Condition(self._lock)
+        # Counters for --stats (no per-frame warnings).
+        self.replaced = 0
+        self.dropped_full = 0
+
+    def _store(self, meta, jpeg_data: bytes, receipt_mono: float) -> None:
+        display_id = meta.display_id
+        with self._not_empty:
+            if display_id in self._latest:
+                self._latest[display_id] = (meta, jpeg_data, receipt_mono)
+                self.replaced += 1
+                logger.debug("Frame replaced: display=%d (latest-frame mailbox)", display_id)
+                return
+            if self.maxsize > 0 and len(self._latest) >= self.maxsize:
+                self.dropped_full += 1
+                logger.debug(
+                    "Frame dropped: display=%d mailbox at capacity %d",
+                    display_id,
+                    self.maxsize,
+                )
+                return
+            self._latest[display_id] = (meta, jpeg_data, receipt_mono)
+            self._order.append(display_id)
+            self._not_empty.notify()
+
+    def put_nowait(self, item) -> None:
+        """Store ``(meta, jpeg)`` (or ``(meta, jpeg, receipt)``), replacing."""
+        meta, jpeg_data = item[0], item[1]
+        if len(item) > 2:
+            receipt_mono = float(item[2])
+        else:
+            receipt_mono = time.monotonic()
+        self._store(meta, jpeg_data, receipt_mono)
+
+    def put(self, item, block: bool = True, timeout=None) -> None:
+        """Non-blocking store; never blocks (drops only on display cap)."""
+        self.put_nowait(item)
+
+    def get(self, block: bool = True, timeout=None):
+        """Return next ``(meta, jpeg, receipt_mono)`` in fair display order."""
+        with self._not_empty:
+            if not block:
+                if not self._latest:
+                    raise queue.Empty
+            elif timeout is None:
+                while not self._latest:
+                    self._not_empty.wait()
+            else:
+                end = time.monotonic() + timeout
+                while not self._latest:
+                    remaining = end - time.monotonic()
+                    if remaining <= 0:
+                        raise queue.Empty
+                    self._not_empty.wait(remaining)
+            while self._order:
+                display_id = self._order.popleft()
+                item = self._latest.pop(display_id, None)
+                if item is not None:
+                    return item
+            raise queue.Empty
+
+    def get_nowait(self):
+        return self.get(block=False)
+
+    def peek(self, display_id: int):
+        """Return latest pending ``(meta, jpeg, receipt_mono)`` without consuming.
+
+        Returns None when no frame is pending for the display. Never reorders,
+        removes, or counts (no replaced/dropped accounting).
+        """
+        with self._lock:
+            return self._latest.get(display_id)
+
+    def empty(self) -> bool:
+        with self._lock:
+            return not self._latest
+
+    def qsize(self) -> int:
+        with self._lock:
+            return len(self._latest)
+
+    def __len__(self) -> int:
+        return self.qsize()
 
 
 class FrameServer:
@@ -39,7 +144,7 @@ class FrameServer:
         self.blur = blur
         self.pixels = pixels
         self.censor_text = censor_text
-        self.frame_queue: queue.Queue = queue.Queue(maxsize=maxsize)
+        self.frame_queue: FrameMailbox = FrameMailbox(maxsize=maxsize)
         self._sock: socket.socket | None = None
         self._client: socket.socket | None = None
         self._thread: threading.Thread | None = None
@@ -95,10 +200,7 @@ class FrameServer:
                         meta.height,
                         len(jpeg_data),
                     )
-                    try:
-                        self.frame_queue.put_nowait((meta, jpeg_data))
-                    except queue.Full:
-                        logger.warning("%s Frame queue full, dropping frame", timestamp())
+                    self.frame_queue.put_nowait((meta, jpeg_data))
                 else:
                     logger.debug("Ignoring message type 0x%02x", msg_type)
 

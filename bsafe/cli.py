@@ -160,6 +160,38 @@ def _warn_erax_unsupported(args):
             )
 
 
+def _validate_live_args(args):
+    """Validate start-only live flags. Exits on error before the helper starts."""
+    from bsafe.detector import INFERENCE_RESOLUTIONS
+    from bsafe.live import validate_live_options
+
+    max_age = getattr(args, "max_frame_age_ms", 250)
+    if max_age is None:
+        max_age = 250
+        args.max_frame_age_ms = max_age
+    if isinstance(max_age, bool) or not isinstance(max_age, int) or max_age < 0:
+        print(f"{error('Error:')} --max-frame-age-ms must be an int >= 0", file=sys.stderr)
+        sys.exit(1)
+    resolution = getattr(args, "inference_resolution", 320)
+    if resolution is None:
+        resolution = 320
+        args.inference_resolution = resolution
+    if resolution not in INFERENCE_RESOLUTIONS:
+        print(
+            f"{error('Error:')} --inference-resolution must be one of "
+            f"{', '.join(str(r) for r in INFERENCE_RESOLUTIONS)}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    try:
+        validate_live_options(
+            getattr(args, "model", None), resolution, bool(getattr(args, "detail_scan", False))
+        )
+    except ValueError as e:
+        print(f"{error('Error:')} {e}", file=sys.stderr)
+        sys.exit(1)
+
+
 def _print_config(args):
     """Print active censor configuration as a sanity check."""
     if args.censor_text:
@@ -192,6 +224,16 @@ def _print_config(args):
         parts.append(f"extras={','.join(extras)}")
     if hasattr(args, "enhance") and args.enhance:
         parts.append(f"enhance={args.enhance}")
+    if hasattr(args, "inference_resolution"):
+        parts.append(f"inference_resolution={args.inference_resolution}")
+    if getattr(args, "detail_scan", False):
+        parts.append("detail_scan=true")
+    if getattr(args, "motion_compensation", False):
+        parts.append("motion_compensation=true")
+    if hasattr(args, "max_frame_age_ms"):
+        parts.append(f"max_frame_age_ms={args.max_frame_age_ms}")
+    if getattr(args, "stats", False):
+        parts.append("stats=true")
     print(f"{dim('Config:')} {', '.join(parts)}", flush=True)
 
 
@@ -218,6 +260,7 @@ def cmd_start(args):
     )
     from bsafe.detector import Detector
     from bsafe.ipc import FrameServer
+    from bsafe.live import DetailScanDetector, LiveStats, is_frame_stale
     from bsafe.swift_helper import spawn_helper
     from bsafe.tracking import BoxTracker
 
@@ -226,6 +269,7 @@ def cmd_start(args):
         print(f"{error('Error:')} --fps must be between 1 and 255", file=sys.stderr)
         sys.exit(1)
     _validate_censor_args(args)
+    _validate_live_args(args)
     _resolve_confidence(args)
     socket_path = os.path.join(tempfile.gettempdir(), f"bsafe-{os.getpid()}.sock")
 
@@ -238,15 +282,26 @@ def cmd_start(args):
     )
     padding = args.padding
     tracker = BoxTracker(persist_frames=args.persist_frames, smooth_alpha=args.smooth_alpha)
+    max_frame_age_ms = getattr(args, "max_frame_age_ms", 250) or 0
+    show_stats = bool(getattr(args, "stats", False))
+    detail_scan = bool(getattr(args, "detail_scan", False))
+    motion_compensation = bool(getattr(args, "motion_compensation", False))
+    inference_resolution = getattr(args, "inference_resolution", 320) or 320
+    stats = LiveStats()
 
     # Warn about unsupported flags with EraX
     _warn_erax_unsupported(args)
 
     _print_config(args)
 
-    # Initialize detector
+    # Initialize detector (live wrapper keeps file paths single-pass)
     print(f"Loading model {bold(args.model or '320n')}...", flush=True)
-    detector = Detector(min_confidence=args.confidence, model=args.model)
+    base_detector = Detector(
+        min_confidence=args.confidence,
+        model=args.model,
+        inference_resolution=inference_resolution,
+    )
+    detector = DetailScanDetector(base_detector, enabled=detail_scan)
 
     # Start IPC server
     server = FrameServer(
@@ -273,13 +328,17 @@ def cmd_start(args):
                     print(f"Helper stderr: {stderr_out}", file=sys.stderr)
                 break
 
-            # Dequeue and process frames
+            # Dequeue and process frames (fair per-display latest-frame mailbox)
             try:
-                meta, jpeg_data = server.frame_queue.get(timeout=0.5)
+                meta, jpeg_data, receipt_mono = server.frame_queue.get(timeout=0.5)
             except queue.Empty:
                 continue
 
+            dequeue_mono = time.monotonic()
+            queue_age_s = dequeue_mono - receipt_mono
+            infer_start = time.monotonic()
             detections = detector.detect(jpeg_data)
+            inference_age_s = time.monotonic() - infer_start
             logger.debug("Processed frame: %d detection(s)", len(detections))
             if detections:
                 for d in detections:
@@ -293,14 +352,54 @@ def cmd_start(args):
             boxes = build_censor_boxes(detections, censor_classes, padding, meta.width, meta.height)
             if args.full_censor:
                 boxes = expand_boxes(boxes, FULL_CENSOR_MULTIPLIER, meta.width, meta.height)
+            # Tracker stays in inference-frame coordinates; motion projects only
+            # the outgoing copy and never feeds back into tracker state.
             boxes = tracker.update(meta.display_id, boxes)
-            server.send_censor(meta.display_id, meta.width, meta.height, boxes)
+            send_boxes = boxes
+            if motion_compensation and send_boxes:
+                pending = server.frame_queue.peek(meta.display_id)
+                if pending is not None:
+                    pending_meta, pending_jpeg, pending_receipt = pending
+                    if (
+                        pending_receipt > receipt_mono
+                        and pending_meta.display_id == meta.display_id
+                        and pending_meta.width == meta.width
+                        and pending_meta.height == meta.height
+                        and not is_frame_stale(pending_receipt, time.monotonic(), max_frame_age_ms)
+                    ):
+                        from bsafe.motion import compensate_boxes
+
+                        send_boxes = compensate_boxes(
+                            jpeg_data, pending_jpeg, list(send_boxes), meta.width, meta.height
+                        )
+            # Stale gate immediately before send (send-start timestamp covers
+            # inference plus tracker/motion elapsed time).
+            send_start_mono = time.monotonic()
+            if max_frame_age_ms > 0 and is_frame_stale(
+                receipt_mono, send_start_mono, max_frame_age_ms
+            ):
+                stats.record_stale()
+                tracker.clear(meta.display_id)
+                server.send_censor(meta.display_id, meta.width, meta.height, [])
+                if show_stats:
+                    line = stats.maybe_log(server.frame_queue.replaced)
+                    if line is not None:
+                        print(dim(line), flush=True)
+                continue
+            server.send_censor(meta.display_id, meta.width, meta.height, send_boxes)
+            stats.record(queue_age_s, inference_age_s, send_start_mono - receipt_mono)
+            if show_stats:
+                line = stats.maybe_log(server.frame_queue.replaced)
+                if line is not None:
+                    print(dim(line), flush=True)
 
     except KeyboardInterrupt:
         print(f"\n{bold('Shutting down...')}")
     finally:
         server.shutdown()
         detector.close()
+        if show_stats:
+            print(dim(stats.summary(server.frame_queue.replaced)), flush=True)
         if helper.poll() is None:
             helper.terminate()
             try:
@@ -782,6 +881,37 @@ def _build_parser():
         action=argparse.BooleanOptionalAction,
         default=False,
         help="Run without Swift helper or detector",
+    )
+    start_parser.add_argument(
+        "--max-frame-age-ms",
+        type=int,
+        default=250,
+        help="Drop results older than this receipt-to-send budget in ms (default: 250, 0 disables)",
+    )
+    start_parser.add_argument(
+        "--stats",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Log live receive-to-send aggregate stats every ~2s (not capture-to-render)",
+    )
+    start_parser.add_argument(
+        "--inference-resolution",
+        type=int,
+        default=320,
+        choices=[320, 640, 960],
+        help="NudeNet input resolution (default: 320). Higher recalls small regions at higher CPU cost",
+    )
+    start_parser.add_argument(
+        "--detail-scan",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="NudeNet-only: full frame plus overlapping 2x2 tiles (more recall, more CPU)",
+    )
+    start_parser.add_argument(
+        "--motion-compensation",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Map inference boxes to the newest pending frame (more responsive, more CPU)",
     )
 
     # video subcommand
