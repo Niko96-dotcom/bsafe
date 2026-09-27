@@ -33,6 +33,7 @@ VALID_KEYS = {
         "inference_resolution",
         "detail_scan",
         "motion_compensation",
+        "motion_lookahead_ms",
     }
     | _COMMON_KEYS,
     "video": {"fps", "chunk_frames", "enhance"} | _COMMON_KEYS,
@@ -57,6 +58,7 @@ dry_run = false
 # inference_resolution = 320  # NudeNet input resolution. Options: 320, 640, 960
 # detail_scan = false  # NudeNet-only: full frame plus overlapping 2x2 tiles (more CPU)
 # motion_compensation = false  # map inference boxes to newest pending frame (more CPU)
+# motion_lookahead_ms = 0.0  # experimental: extrapolate past pending frame in ms (0 = off, 0-100, requires motion_compensation; may overshoot/reverse)
 
 [video]
 # fps =              # unset = use native video FPS

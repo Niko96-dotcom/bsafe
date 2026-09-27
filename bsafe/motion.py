@@ -4,6 +4,8 @@ Translation-only per-box Lucas-Kanade shift. Stateless; falls back to
 clamped input boxes when motion is unmeasurable.
 """
 
+import math
+
 import cv2
 import numpy as np
 
@@ -47,6 +49,17 @@ def _clamp_box(box: tuple[int, int, int, int], w: int, h: int) -> tuple[int, int
     return (x1, y1, nw, nh)
 
 
+def _lead_factor(lead_ratio: float) -> float:
+    """Bounded prediction factor: 1 + clamp(lead_ratio, 0, 2)."""
+    try:
+        lr = float(lead_ratio)
+    except Exception:
+        return 1.0
+    if not math.isfinite(lr):
+        return 1.0
+    return 1.0 + min(2.0, max(0.0, lr))
+
+
 def _compensate_one(
     ref_s: np.ndarray,
     cur_s: np.ndarray,
@@ -54,6 +67,8 @@ def _compensate_one(
     scale: float,
     w: int,
     h: int,
+    *,
+    lead_ratio: float = 0.0,
 ) -> tuple[int, int, int, int] | None:
     """Translate one box or return its clamped fallback (None if invalid)."""
     fallback = _clamp_box(box, w, h)
@@ -114,10 +129,14 @@ def _compensate_one(
             return fallback
         if float(np.max(spread)) > _SPREAD_MAX_PX:
             return fallback
-        if float(np.hypot(med[0], med[1])) > _MAX_SHIFT_FRAC * min(sh_w, sh_h):
+        factor = _lead_factor(lead_ratio)
+        proj = med * factor
+        if not np.all(np.isfinite(proj)):
             return fallback
-        dx, dy = float(med[0]) / scale, float(med[1]) / scale
-        if not np.isfinite(dx) or not np.isfinite(dy):
+        if float(np.hypot(proj[0], proj[1])) > _MAX_SHIFT_FRAC * min(sh_w, sh_h):
+            return fallback
+        dx, dy = float(proj[0]) / scale, float(proj[1]) / scale
+        if not math.isfinite(dx) or not math.isfinite(dy):
             return fallback
         moved = (int(round(x + dx)), int(round(y + dy)), int(bw), int(bh))
         clipped = _clamp_box(moved, w, h)
@@ -132,11 +151,15 @@ def compensate_boxes(
     boxes: list[tuple[int, int, int, int]],
     frame_width: int,
     frame_height: int,
+    *,
+    lead_ratio: float = 0.0,
 ) -> list[tuple[int, int, int, int]]:
     """Map reference ``(x, y, w, h)`` boxes onto the current frame.
 
     Translation only (extent conserved, clipped at edges). Invalid boxes
     are dropped; decode/size/tracking failure returns clamped inputs.
+    ``lead_ratio`` optionally extrapolates the robust shift by
+    ``1 + clamp(lead_ratio, 0, 2)`` (0 = no prediction).
     """
     items = list(boxes) if boxes else []
     if not items:
@@ -170,7 +193,7 @@ def compensate_boxes(
             ref_s, cur_s = ref, cur
         out: list[tuple[int, int, int, int]] = []
         for b, _ in safe:
-            moved = _compensate_one(ref_s, cur_s, b, scale, w, h)
+            moved = _compensate_one(ref_s, cur_s, b, scale, w, h, lead_ratio=lead_ratio)
             if moved is not None:
                 out.append(moved)
         return out

@@ -112,3 +112,71 @@ def test_input_immutable():
     snapshot = copy.deepcopy(boxes)
     compensate_boxes(_jpeg(ref), _jpeg(cur), boxes, W, H)
     assert boxes == snapshot
+
+
+def test_lead_ratio_doubles_displacement():
+    block = _textured_block(60, 60, seed=7)
+    ref = _place(_bg(), block, 50, 40)
+    cur = _place(_bg(), block, 70, 70)  # +20 x, +30 y
+    out = compensate_boxes(_jpeg(ref), _jpeg(cur), [(50, 40, 60, 60)], W, H, lead_ratio=1.0)
+    assert len(out) == 1
+    x, y, bw, bh = out[0]
+    assert (bw, bh) == (60, 60)
+    assert abs(x - 90) <= 16, out
+    assert abs(y - 100) <= 16, out
+    _assert_bounded(out)
+
+
+def test_lead_ratio_zero_matches_default():
+    block = _textured_block(60, 60, seed=7)
+    ref = _place(_bg(), block, 50, 40)
+    cur = _place(_bg(), block, 70, 70)
+    boxes = [(50, 40, 60, 60)]
+    assert compensate_boxes(
+        _jpeg(ref), _jpeg(cur), boxes, W, H, lead_ratio=0.0
+    ) == compensate_boxes(_jpeg(ref), _jpeg(cur), boxes, W, H)
+
+
+def test_stationary_lead_no_new_motion():
+    block = _textured_block(60, 60, seed=7)
+    ref = _place(_bg(), block, 50, 40)
+    out = compensate_boxes(_jpeg(ref), _jpeg(ref), [(50, 40, 60, 60)], W, H, lead_ratio=1.0)
+    assert len(out) == 1
+    x, y, bw, bh = out[0]
+    assert (bw, bh) == (60, 60)
+    assert abs(x - 50) <= 2, out
+    assert abs(y - 40) <= 2, out
+    _assert_bounded(out)
+
+
+def test_negative_and_nonfinite_ratio_clamped_to_base():
+    block = _textured_block(60, 60, seed=7)
+    ref = _place(_bg(), block, 50, 40)
+    cur = _place(_bg(), block, 70, 70)
+    boxes = [(50, 40, 60, 60)]
+    base = compensate_boxes(_jpeg(ref), _jpeg(cur), boxes, W, H, lead_ratio=0.0)
+    assert compensate_boxes(_jpeg(ref), _jpeg(cur), boxes, W, H, lead_ratio=-1.0) == base
+    assert compensate_boxes(_jpeg(ref), _jpeg(cur), boxes, W, H, lead_ratio=float("nan")) == base
+    assert compensate_boxes(_jpeg(ref), _jpeg(cur), boxes, W, H, lead_ratio=float("inf")) == base
+    _assert_bounded(base)
+
+
+def test_huge_ratio_bounded_to_triple():
+    block = _textured_block(60, 60, seed=7)
+    ref = _place(_bg(), block, 50, 40)
+    cur = _place(_bg(), block, 70, 70)
+    boxes = [(50, 40, 60, 60)]
+    clamped = compensate_boxes(_jpeg(ref), _jpeg(cur), boxes, W, H, lead_ratio=2.0)
+    assert compensate_boxes(_jpeg(ref), _jpeg(cur), boxes, W, H, lead_ratio=100.0) == clamped
+    _assert_bounded(clamped)
+
+
+def test_final_shift_cap_applies_to_projected():
+    block = _textured_block(60, 60, seed=7)
+    ref = _place(_bg(), block, 50, 40)
+    cur = _place(_bg(), block, 90, 100)  # base passes cap, doubled exceeds it
+    boxes = [(50, 40, 60, 60)]
+    base = compensate_boxes(_jpeg(ref), _jpeg(cur), boxes, W, H, lead_ratio=0.0)
+    assert base != boxes  # sanity: base motion accepted
+    assert compensate_boxes(_jpeg(ref), _jpeg(cur), boxes, W, H, lead_ratio=1.0) == boxes
+    _assert_bounded(base)

@@ -121,9 +121,9 @@ def _run(
     ]
     if motion_fn is not None:
 
-        def _motion(ref_jpeg, cur_jpeg, boxes, w, h):
+        def _motion(ref_jpeg, cur_jpeg, boxes, w, h, *a, **k):
             clock.advance(motion_advance)
-            return motion_fn(ref_jpeg, cur_jpeg, boxes, w, h)
+            return motion_fn(ref_jpeg, cur_jpeg, boxes, w, h, *a, **k)
 
         patches.append(patch("bsafe.motion.compensate_boxes", side_effect=_motion))
     for p in patches:
@@ -167,7 +167,7 @@ def test_fresh_with_newer_pending_sends_compensated_and_tracker_stays_inference(
         patch("bsafe.tracking.BoxTracker", SpyTracker),
         patch(
             "bsafe.motion.compensate_boxes",
-            side_effect=lambda r, c, b, w, h: (
+            side_effect=lambda r, c, b, w, h, *a, **k: (
                 clock.advance(0.01),
                 [(30, 30, 20, 20)],
             )[1],
@@ -336,7 +336,7 @@ def test_final_deadline_after_motion_stale_sends_empty():
     pending = {1: (_meta(1), b"cur", receipt + 0.01)}
     args = _args(["--motion-compensation", "--max-frame-age-ms", "250"])
 
-    def _motion(r, c, boxes, w, h):
+    def _motion(r, c, boxes, w, h, *a, **k):
         clock.advance(0.5)  # compensation pushes send-start past deadline
         return [(99, 99, 20, 20)]
 
@@ -378,3 +378,126 @@ def test_fresh_not_dropped_when_newer_frame_exists():
         sends, _, _ = _run(args, frames, pending=pending, detections=_det(), clock=clock)
     assert m.called
     assert sends[0][3] == [(11, 11, 20, 20)]
+
+
+def test_lookahead_default_off():
+    parser, *_ = _build_parser()
+    args = parser.parse_args(["start"])
+    assert args.motion_lookahead_ms == 0
+    assert args.motion_compensation is False
+
+
+def test_lookahead_ratio_derived_from_interval():
+    clock = _Clock(100.0)
+    receipt = clock.t
+    frames = [(_meta(1), b"ref", receipt)]
+    pending = {1: (_meta(1), b"cur", receipt + 0.01)}
+    args = _args(
+        ["--motion-compensation", "--motion-lookahead-ms", "10", "--max-frame-age-ms", "250"]
+    )
+    captured = {}
+
+    def _cap(r, c, boxes, w, h, *a, **k):
+        captured["ratio"] = k.get("lead_ratio")
+        return [(30, 30, 20, 20)]
+
+    with patch("bsafe.motion.compensate_boxes", side_effect=_cap):
+        sends, _, _ = _run(
+            args, frames, pending=pending, detections=_det(), clock=clock, det_advance=0.02
+        )
+    assert sends[0][3] == [(30, 30, 20, 20)]
+    # 10ms / 10ms interval = 1.0
+    assert captured.get("ratio") is not None
+    assert abs(captured["ratio"] - 1.0) < 1e-6
+
+
+def test_lookahead_ratio_clamped_and_config_value_used():
+    clock = _Clock(100.0)
+    receipt = clock.t
+    frames = [(_meta(1), b"ref", receipt)]
+    pending = {1: (_meta(1), b"cur", receipt + 0.01)}
+    args = _args(["--motion-compensation", "--max-frame-age-ms", "250"])
+    args.motion_lookahead_ms = 100.0  # as if from config file
+    captured = {}
+
+    def _cap(r, c, boxes, w, h, *a, **k):
+        captured["ratio"] = k.get("lead_ratio")
+        return [(30, 30, 20, 20)]
+
+    with patch("bsafe.motion.compensate_boxes", side_effect=_cap):
+        sends, _, _ = _run(
+            args, frames, pending=pending, detections=_det(), clock=clock, det_advance=0.02
+        )
+    assert sends[0][3] == [(30, 30, 20, 20)]
+    # 100ms / 10ms = 10 -> clamped to 2.0
+    assert abs(captured["ratio"] - 2.0) < 1e-6
+
+
+def test_lookahead_zero_passes_zero_ratio():
+    clock = _Clock(100.0)
+    receipt = clock.t
+    frames = [(_meta(1), b"ref", receipt)]
+    pending = {1: (_meta(1), b"cur", receipt + 0.02)}
+    args = _args(["--motion-compensation", "--max-frame-age-ms", "250"])
+    captured = {}
+
+    def _cap(r, c, boxes, w, h, *a, **k):
+        captured["ratio"] = k.get("lead_ratio")
+        return [(30, 30, 20, 20)]
+
+    with patch("bsafe.motion.compensate_boxes", side_effect=_cap):
+        _run(args, frames, pending=pending, detections=_det(), clock=clock, det_advance=0.02)
+    assert abs(captured.get("ratio", 99.0) - 0.0) < 1e-9
+
+
+def test_lookahead_requires_compensation():
+    import pytest
+
+    from bsafe.cli import _validate_live_args
+
+    args = _args(["--motion-lookahead-ms", "10"])
+    with pytest.raises(SystemExit):
+        _validate_live_args(args)
+
+
+def test_lookahead_rejects_out_of_range():
+    import pytest
+
+    from bsafe.cli import _validate_live_args
+
+    for bad in [
+        ["--motion-compensation", "--motion-lookahead-ms", "-5"],
+        ["--motion-compensation", "--motion-lookahead-ms", "150"],
+    ]:
+        args = _args(bad)
+        with pytest.raises(SystemExit):
+            _validate_live_args(args)
+    args = _args(["--motion-compensation"])
+    args.motion_lookahead_ms = float("nan")
+    with pytest.raises(SystemExit):
+        _validate_live_args(args)
+
+
+def test_lookahead_invalid_rejected_before_helper():
+    import pytest
+
+    args = _args(["--motion-lookahead-ms", "10", "--max-frame-age-ms", "250"])
+    with (
+        patch("bsafe.swift_helper.spawn_helper") as helper_mock,
+        patch("bsafe.detector.Detector") as det_mock,
+    ):
+        with pytest.raises(SystemExit):
+            cmd_start(args)
+    helper_mock.assert_not_called()
+    det_mock.assert_not_called()
+
+
+def test_lookahead_logged_in_config(capsys):
+    args = _args(
+        ["--motion-compensation", "--motion-lookahead-ms", "12.5", "--max-frame-age-ms", "250"]
+    )
+    from bsafe.cli import _print_config
+
+    _print_config(args)
+    out = capsys.readouterr().out
+    assert "motion_lookahead_ms=12.5" in out

@@ -142,6 +142,7 @@ Shared flags (work with both `start` and `video`):
 - `--inference-resolution {320,640,960}` — NudeNet input resolution (default: 320). Higher values recall smaller regions at higher CPU cost. NudeNet-only; rejected with EraX
 - `--detail-scan` — NudeNet-only: full frame plus overlapping 2x2 tiles, remapped and class-aware deduped. More recall for small content at ~5x CPU cost. Rejected with EraX
 - `--motion-compensation` — map inference boxes to the newest same-display pending frame via translation-only motion compensation before sending. More responsive under load at higher CPU cost. Off by default; tracker state stays in inference-frame coordinates
+- `--motion-lookahead-ms N` — experimental, off by default (`0`). Extrapolates the measured motion shift beyond the pending frame by `N` ms (range `0`–`100`, requires `--motion-compensation`). May overshoot or reverse on direction changes; prefer small values
 
 ### Live latency vs detail
 
@@ -171,6 +172,11 @@ before content is briefly visible.
   inference. The staleness deadline is checked immediately before send and
   includes compensation time; fresh results are never dropped merely because a
   newer frame exists.
+- `--motion-lookahead-ms` is experimental and off by default. It extends the
+  measured shift proportionally to the pending-frame interval
+  (`lead_ratio = lookahead_s / delta`, clamped to `0`–`2`). Because it
+  extrapolates, fast direction changes can overshoot or briefly reverse — keep
+  it off unless residual lag is measured.
 
 `image`-only flags:
 

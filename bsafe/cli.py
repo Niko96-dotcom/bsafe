@@ -2,6 +2,7 @@ import argparse
 import faulthandler
 import gc
 import logging
+import math
 import multiprocessing
 import os
 import queue
@@ -165,6 +166,28 @@ def _validate_live_args(args):
     from bsafe.detector import INFERENCE_RESOLUTIONS
     from bsafe.live import validate_live_options
 
+    lookahead = getattr(args, "motion_lookahead_ms", 0)
+    if lookahead is None:
+        lookahead = 0
+        args.motion_lookahead_ms = lookahead
+    if (
+        isinstance(lookahead, bool)
+        or not isinstance(lookahead, (int, float))
+        or not math.isfinite(float(lookahead))
+        or not (0.0 <= float(lookahead) <= 100.0)
+    ):
+        print(
+            f"{error('Error:')} --motion-lookahead-ms must be a number between 0 and 100",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    if float(lookahead) > 0 and not bool(getattr(args, "motion_compensation", False)):
+        print(
+            f"{error('Error:')} --motion-lookahead-ms requires --motion-compensation",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     max_age = getattr(args, "max_frame_age_ms", 250)
     if max_age is None:
         max_age = 250
@@ -230,6 +253,8 @@ def _print_config(args):
         parts.append("detail_scan=true")
     if getattr(args, "motion_compensation", False):
         parts.append("motion_compensation=true")
+    if hasattr(args, "motion_lookahead_ms"):
+        parts.append(f"motion_lookahead_ms={args.motion_lookahead_ms}")
     if hasattr(args, "max_frame_age_ms"):
         parts.append(f"max_frame_age_ms={args.max_frame_age_ms}")
     if getattr(args, "stats", False):
@@ -286,6 +311,12 @@ def cmd_start(args):
     show_stats = bool(getattr(args, "stats", False))
     detail_scan = bool(getattr(args, "detail_scan", False))
     motion_compensation = bool(getattr(args, "motion_compensation", False))
+    try:
+        motion_lookahead_ms = float(getattr(args, "motion_lookahead_ms", 0) or 0)
+    except Exception:
+        motion_lookahead_ms = 0.0
+    if not math.isfinite(motion_lookahead_ms):
+        motion_lookahead_ms = 0.0
     inference_resolution = getattr(args, "inference_resolution", 320) or 320
     stats = LiveStats()
 
@@ -369,8 +400,21 @@ def cmd_start(args):
                     ):
                         from bsafe.motion import compensate_boxes
 
+                        lead_ratio = 0.0
+                        delta_s = pending_receipt - receipt_mono
+                        if delta_s > 0 and motion_lookahead_ms > 0:
+                            lead_ratio = (motion_lookahead_ms / 1000.0) / delta_s
+                            if not math.isfinite(lead_ratio):
+                                lead_ratio = 0.0
+                            else:
+                                lead_ratio = min(2.0, max(0.0, lead_ratio))
                         send_boxes = compensate_boxes(
-                            jpeg_data, pending_jpeg, list(send_boxes), meta.width, meta.height
+                            jpeg_data,
+                            pending_jpeg,
+                            list(send_boxes),
+                            meta.width,
+                            meta.height,
+                            lead_ratio=lead_ratio,
                         )
             # Stale gate immediately before send (send-start timestamp covers
             # inference plus tracker/motion elapsed time).
@@ -912,6 +956,13 @@ def _build_parser():
         action=argparse.BooleanOptionalAction,
         default=False,
         help="Map inference boxes to the newest pending frame (more responsive, more CPU)",
+    )
+    start_parser.add_argument(
+        "--motion-lookahead-ms",
+        type=float,
+        default=0,
+        help="Experimental: extrapolate motion beyond the pending frame by this many ms "
+        "(default: 0 off, 0-100, requires --motion-compensation; may overshoot/reverse)",
     )
 
     # video subcommand
