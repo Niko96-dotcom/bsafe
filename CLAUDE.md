@@ -55,6 +55,7 @@ Without `-v`, the helper's stderr is a pipe that `StderrTail`
 (`bsafe/swift_helper.py`) drains on a daemon thread, keeping the last 50
 lines for the exit message. Never leave a helper pipe undrained: once it
 fills (~64 KB), the helper blocks and the overlay freezes.
+Capture interruptions auto-recover in-process per display with exponential backoff (`kill -USR1 <BsafeCapture pid>` simulates an interruption for testing); persistent failure still exits with code 3.
 
 ## Benchmark
 
@@ -126,6 +127,10 @@ Rules:
 - Keep file paths uncolored (use `bold()` for emphasis on input/output paths, not color).
 - Respect `NO_COLOR` env var and non-TTY output (auto-detected by `_color_enabled()`).
 - No external dependencies — pure ANSI escape codes only.
+
+## Menu bar app
+
+`swift/Sources/BsafeMenuKit` is a UI-free library (settings-to-CLI-arguments mapping, stats-line parsing, supervised `bsafe start` child via posix_spawn with its own process group and SIGINT→SIGTERM→SIGKILL escalation, stdout/stderr drained on background threads); `swift/Sources/BsafeMenuBar` is the SwiftUI `MenuBarExtra` app that only supervises the CLI, with tests in `swift/Tests/BsafeMenuKitTests`. Install with `scripts/install-menubar.sh`, which builds release, assembles `~/Applications/Bsafe.app` (Info.plist carries `BsafeCLIPath`), and ad-hoc signs it.
 
 ## Privacy
 

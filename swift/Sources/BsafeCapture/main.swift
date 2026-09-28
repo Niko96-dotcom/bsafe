@@ -288,7 +288,6 @@ let trackerConfig = TrackerConfig(
 )
 // smoothPercent is parsed for protocol compatibility; the live tracker no longer uses it.
 let leadSeconds = presentLeadSeconds()
-let streamDelegate = StreamDelegate()
 
 // Create one overlay (synchronously on the main thread) + pipeline per
 // display, start its stream, then report MSG_DISPLAY_INFO before any frame.
@@ -300,10 +299,19 @@ for scDisplay in resolved.displays {
     overlay.setup(displayID: scDisplay.displayID, capturable: capturable)
     overlaysByDisplay[scDisplay.displayID] = overlay
 }
-var excludedWindows: [SCWindow] = []
+// Reusable exclusion computation: restarts recompute this via the provider
+// below (windows can be re-created after sleep/lock). When the overlay is not
+// capturable this returns [] without touching NSWindow; otherwise window ids
+// are snapshotted on the main thread (startup runs on main, restarts run on a
+// background queue — snapshotOverlayWindowIDs handles both).
+let excludedWindowsProvider: () -> [SCWindow] = {
+    guard capturable else { return [] }
+    let ids = snapshotOverlayWindowIDs(Array(overlaysByDisplay.values))
+    return computeExcludedWindows(capturable: capturable, overlayWindowIDs: ids)
+}
+let excludedWindows = excludedWindowsProvider()
 if capturable {
-    let ids = Set(overlaysByDisplay.values.compactMap { $0.windowID })
-    excludedWindows = shareableWindows(withIDs: ids)
+    let ids = snapshotOverlayWindowIDs(Array(overlaysByDisplay.values))
     if excludedWindows.count != ids.count {
         fputs("BsafeCapture: warning: could only exclude \(excludedWindows.count)/\(ids.count) overlay windows from capture\n", stderr)
     }
@@ -330,8 +338,9 @@ for scDisplay in resolved.displays {
         styleProvider: styleProvider,
         frameSender: frameSender
     )
+    pipeline.configureRestart(fps: params.fps, excludedWindowsProvider: excludedWindowsProvider)
     do {
-        try pipeline.startStream(display: scDisplay, fps: params.fps, excludingWindows: excludedWindows, delegate: streamDelegate)
+        try pipeline.startStream(display: scDisplay, fps: params.fps, excludingWindows: excludedWindows)
     } catch {
         fputs("BsafeCapture: failed to start capture for display \(did): \(error)\n", stderr)
         continue
@@ -362,6 +371,18 @@ guard !started.isEmpty else {
 print("BsafeCapture: capturing \(started.count) display(s): [\(startupIDs.joined(separator: ", "))] at \(params.fps) FPS, scale=\(params.scalePercent)%")
 
 let routes: [UInt32: DisplayPipeline] = Dictionary(uniqueKeysWithValues: started.map { ($0.displayID, $0.pipeline) })
+
+// Debug hook (harmless): `kill -USR1 <BsafeCapture pid>` simulates a stream
+// interruption on every display — stopCapture plus the same restart path as
+// didStopWithError with synthetic code -1.
+signal(SIGUSR1, SIG_IGN)
+let usr1Source = DispatchSource.makeSignalSource(signal: SIGUSR1, queue: DispatchQueue.global())
+usr1Source.setEventHandler {
+    for pipeline in routes.values {
+        pipeline.simulateInterruption()
+    }
+}
+usr1Source.resume()
 
 // Stats timer (only when the server asked for native stats).
 var statsTimer: DispatchSourceTimer? = nil

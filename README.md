@@ -61,6 +61,37 @@ bsafe start --display all         # all displays (uses more CPU)
 Covering more displays at higher resolutions with more NSFW content increases CPU load
 and may reduce quality — you are processing and rendering video in real time.
 
+## Menu bar app
+
+A tiny menu bar app that starts/stops `bsafe start` and exposes a few
+settings. It only supervises the CLI — capture and detection stay in
+`bsafe start`.
+
+Install:
+
+```sh
+scripts/install-menubar.sh
+```
+
+This builds the Swift targets, assembles `~/Applications/Bsafe.app`
+(ad-hoc signed), and opens it. On first Start, grant **Screen Recording**
+permission to Bsafe (System Settings → Privacy & Security → Screen
+Recording). The script signs with your Developer ID / Apple Development
+identity when one exists (override with `BSAFE_SIGN_IDENTITY`), so grants
+survive reinstalls; without one it signs ad-hoc and grants reset on every
+reinstall.
+
+Settings map to `bsafe start` flags: Censor → `--censor`, Feet →
+`--feet`/`--no-feet`, Style → `--pixels`/`--blur`, Padding → `--padding`,
+Min padding → `--min-padding`, Quality → Fast (`--extra-scales none`),
+Standard (`--extra-scales 0.5`), Strict (`--detect-scale 1.5
+--extra-scales 0.5`).
+
+If `bsafe start` exits unexpectedly while switched on, the app relaunches it
+(2/5/10/30 s backoff) and gives up after 5 failures within 5 minutes.
+
+Uninstall: quit Bsafe, then `rm -rf ~/Applications/Bsafe.app`.
+
 ### Process video files
 
 Produce censored copies of local videos (originals are never modified):
@@ -178,6 +209,8 @@ bsafe start --fps 120 --detect-scale 1.5 --padding 0.4 --persist-frames 4
 Limitation: an overlay reacts after content is drawn, so the first frames of
 newly appearing content can still be visible (typically a few tens of
 milliseconds), and detection quality depends on the model.
+
+Troubleshooting: capture interruptions (screen lock/sleep, permission re-confirm) auto-recover per display; if recovery fails persistently the helper still exits (code 3).
 
 `image`-only flags:
 

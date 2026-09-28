@@ -397,10 +397,124 @@ def test_cmd_start_reports_helper_stderr_tail_after_large_output(
         session = MagicMock()
         session.step.side_effect = _step
         session_cls.return_value = session
-        cmd_start(args)
+        ret = cmd_start(args)
     out = capsys.readouterr()
+    assert ret == 3
     assert "Swift helper exited (code 3)" in out.err
     assert "Helper stderr:" in out.err
     assert "FAKE-HELPER-DONE" in out.err
     assert "b'" not in out.err
     assert "Shutting down" not in out.out
+
+
+def test_cmd_start_helper_death_returns_exit_code():
+    args = _args([])
+    with (
+        patch("bsafe.ipc.FrameServer") as server_cls,
+        patch("bsafe.swift_helper.spawn_helper") as helper_mock,
+        patch("bsafe.fastdetect.FullFrameNudeDetector") as det_cls,
+        patch("bsafe.live.LiveSession") as session_cls,
+    ):
+        server_cls.return_value = MagicMock()
+        helper = MagicMock()
+        helper.poll.return_value = 3
+        helper.returncode = 3
+        helper.stderr = None
+        helper_mock.return_value = helper
+        det_cls.return_value = MagicMock()
+        session_cls.return_value = MagicMock()
+        ret = cmd_start(args)
+    assert ret == 3
+    helper.terminate.assert_not_called()
+
+
+def test_cmd_start_helper_zero_exit_maps_to_one():
+    args = _args([])
+    with (
+        patch("bsafe.ipc.FrameServer") as server_cls,
+        patch("bsafe.swift_helper.spawn_helper") as helper_mock,
+        patch("bsafe.fastdetect.FullFrameNudeDetector") as det_cls,
+        patch("bsafe.live.LiveSession") as session_cls,
+    ):
+        server_cls.return_value = MagicMock()
+        helper = MagicMock()
+        helper.poll.return_value = 0
+        helper.returncode = 0
+        helper.stderr = None
+        helper_mock.return_value = helper
+        det_cls.return_value = MagicMock()
+        session_cls.return_value = MagicMock()
+        ret = cmd_start(args)
+    assert ret == 1
+
+
+def test_cmd_start_user_interrupt_returns_zero():
+    args = _args([])
+    with (
+        patch("bsafe.ipc.FrameServer") as server_cls,
+        patch("bsafe.swift_helper.spawn_helper") as helper_mock,
+        patch("bsafe.fastdetect.FullFrameNudeDetector") as det_cls,
+        patch("bsafe.live.LiveSession") as session_cls,
+    ):
+        server_cls.return_value = MagicMock()
+        helper = MagicMock()
+        helper.poll.return_value = None
+        helper.stderr = None
+        helper_mock.return_value = helper
+        det_cls.return_value = MagicMock()
+        session = MagicMock()
+        session.step.side_effect = KeyboardInterrupt
+        session_cls.return_value = session
+        ret = cmd_start(args)
+    assert ret == 0
+
+
+def test_cmd_start_parent_death_triggers_shutdown(monkeypatch):
+    import os as _os
+
+    args = _args([])
+    real_getppid = _os.getppid()
+    calls = iter([real_getppid, 1, 1, 1])
+
+    monkeypatch.setattr("os.getppid", lambda: next(calls, 1))
+    with (
+        patch("bsafe.ipc.FrameServer") as server_cls,
+        patch("bsafe.swift_helper.spawn_helper") as helper_mock,
+        patch("bsafe.fastdetect.FullFrameNudeDetector") as det_cls,
+        patch("bsafe.live.LiveSession") as session_cls,
+    ):
+        server = MagicMock()
+        server_cls.return_value = server
+        helper = MagicMock()
+        helper.poll.return_value = None
+        helper.stderr = None
+        helper_mock.return_value = helper
+        det_cls.return_value = MagicMock()
+        session_cls.return_value = MagicMock()
+        ret = cmd_start(args)
+    assert ret == 1
+    server.shutdown.assert_called_once()
+    helper.terminate.assert_called_once()
+
+
+def test_cmd_start_no_watchdog_when_parent_is_init(monkeypatch):
+
+    args = _args([])
+    monkeypatch.setattr("os.getppid", lambda: 1)
+    with (
+        patch("bsafe.ipc.FrameServer") as server_cls,
+        patch("bsafe.swift_helper.spawn_helper") as helper_mock,
+        patch("bsafe.fastdetect.FullFrameNudeDetector") as det_cls,
+        patch("bsafe.live.LiveSession") as session_cls,
+    ):
+        server_cls.return_value = MagicMock()
+        helper = MagicMock()
+        helper.poll.side_effect = [None, 0]
+        helper.stderr = None
+        helper_mock.return_value = helper
+        det_cls.return_value = MagicMock()
+        session = MagicMock()
+        session.step.side_effect = KeyboardInterrupt
+        session_cls.return_value = session
+        ret = cmd_start(args)
+    assert ret == 0

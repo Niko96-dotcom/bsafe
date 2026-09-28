@@ -1,11 +1,19 @@
 import Foundation
 import ScreenCaptureKit
 
-/// Shared SCStream delegate: logs stream errors.
-final class StreamDelegate: NSObject, SCStreamDelegate {
+/// Per-pipeline SCStream delegate: forwards the stop to its pipeline so only
+/// that display restarts. Never exits; the pipeline owns recovery.
+final class PipelineStreamDelegate: NSObject, SCStreamDelegate {
+    weak var pipeline: DisplayPipeline?
+
+    init(pipeline: DisplayPipeline? = nil) {
+        self.pipeline = pipeline
+        super.init()
+    }
+
     func stream(_ stream: SCStream, didStopWithError error: Error) {
-        fputs("BsafeCapture: stream stopped with error: \(error)\n", stderr)
-        exit(3)
+        let code = (error as NSError).code
+        pipeline?.handleStreamStopped(code: code, stream: stream)
     }
 }
 
@@ -21,7 +29,12 @@ func resolveDisplays(filter rawFilter: String?) throws -> (displays: [SCDisplay]
         fetchError = error
         sem.signal()
     }
-    sem.wait()
+    if sem.wait(timeout: .now() + 5) == .timedOut {
+        throw NSError(
+            domain: "BsafeCapture", code: 6,
+            userInfo: [NSLocalizedDescriptionKey: "Timed out fetching shareable content"]
+        )
+    }
     if let fetchError {
         throw fetchError
     }
@@ -85,7 +98,12 @@ func shareableWindows(withIDs ids: Set<CGWindowID>) -> [SCWindow] {
         found = content?.windows.filter { ids.contains($0.windowID) } ?? []
         semaphore.signal()
     }
-    semaphore.wait()
+    // Best effort on timeout (5 s): return what we have so the restart queue
+    // never blocks forever. The fetchDisplay/startCapture timeouts below are
+    // the ones counted as restart failures.
+    if semaphore.wait(timeout: .now() + 5) == .timedOut {
+        return found
+    }
     return found
 }
 
@@ -100,4 +118,41 @@ func presentLeadSeconds() -> Double {
         return ms / 1000.0
     }
     return 0.016
+}
+
+/// Recompute the excluded windows the same way startup does, for stream
+/// restarts (displays/windows can be re-created after sleep/lock).
+/// When the overlay is not capturable-excluded this returns [] without
+/// touching AppKit at all (callers must also avoid snapshotting window ids
+/// in that case — see snapshotOverlayWindowIDs).
+func computeExcludedWindows(capturable: Bool, overlayWindowIDs: Set<CGWindowID>) -> [SCWindow] {
+    guard capturable else { return [] }
+    return shareableWindows(withIDs: overlayWindowIDs)
+}
+
+/// Synchronously fetch the SCDisplay with the given displayID, or nil when
+/// gone. A 5 s timeout also returns nil so the restart queue never blocks
+/// forever; the caller counts nil as a restart failure.
+func fetchDisplay(displayID: UInt32) -> SCDisplay? {
+    var fetched: SCShareableContent?
+    let sem = DispatchSemaphore(value: 0)
+    SCShareableContent.getExcludingDesktopWindows(false, onScreenWindowsOnly: true) { content, _ in
+        fetched = content
+        sem.signal()
+    }
+    if sem.wait(timeout: .now() + 5) == .timedOut {
+        return nil
+    }
+    return fetched?.displays.first(where: { $0.displayID == displayID })
+}
+
+/// Backoff delay for restart attempt N (1-based): 0.25, 0.5, 1, 2, then 3 s.
+func restartDelay(forAttempt attempt: Int) -> Double {
+    switch attempt {
+    case 1: return 0.25
+    case 2: return 0.5
+    case 3: return 1.0
+    case 4: return 2.0
+    default: return 3.0
+    }
 }

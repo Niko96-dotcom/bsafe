@@ -27,6 +27,26 @@ struct OverlayFrame {
     var text: String? = nil
 }
 
+/// Run `body` on the main thread, calling directly when already there.
+/// Startup runs on the main thread (an unconditional `main.sync` would
+/// deadlock); restarts run on a background queue and must hop to main
+/// before touching NSWindow/NSScreen.
+func mainThreadSync<T>(_ body: @escaping () -> T) -> T {
+    if Thread.isMainThread {
+        return body()
+    } else {
+        return DispatchQueue.main.sync(execute: body)
+    }
+}
+
+/// Snapshot overlay window-server ids without ever touching NSWindow off
+/// the main thread.
+func snapshotOverlayWindowIDs(_ overlays: [CensorOverlay]) -> Set<CGWindowID> {
+    return mainThreadSync {
+        Set(overlays.compactMap { $0.windowID })
+    }
+}
+
 /// Borderless, transparent, always-on-top overlay window for censoring.
 /// publish() is callable from any thread; rendering happens on the main
 /// thread via a coalesced drain (latest frame wins, no backlog).
@@ -35,7 +55,43 @@ struct OverlayFrame {
 final class CensorOverlay {
     private var window: NSWindow?
     /// Window-server id of the overlay window (for excluding it from our own capture).
+    /// Must only be touched on the main thread — restarts must use
+    /// `safeWindowID()` / `snapshotOverlayWindowIDs(_:)` instead.
     var windowID: CGWindowID? { window.map { CGWindowID($0.windowNumber) } }
+
+    /// Thread-safe window id snapshot (hops to main when off-main).
+    /// Never touch `windowID` directly off the main thread.
+    func safeWindowID() -> CGWindowID? {
+        return mainThreadSync { self.windowID }
+    }
+
+    /// Re-read the NSScreen frame for `displayID` and move the overlay when
+    /// the origin/size in points changed (e.g. arrangement change). Safe to
+    /// call from any thread (hops to main internally). Pixel-size changes are
+    /// handled by the caller's capture-size check (exit 3).
+    func refreshFrame(displayID: CGDirectDisplayID) {
+        mainThreadSync {
+            let screenFrame: NSRect
+            if let match = NSScreen.screens.first(where: {
+                ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID) == displayID
+            }) {
+                screenFrame = match.frame
+            } else {
+                let cgBounds = CGDisplayBounds(displayID)
+                let primaryHeight = NSScreen.screens.first?.frame.height ?? cgBounds.height
+                screenFrame = NSRect(
+                    x: cgBounds.origin.x,
+                    y: primaryHeight - cgBounds.origin.y - cgBounds.height,
+                    width: cgBounds.width,
+                    height: cgBounds.height
+                )
+            }
+            if screenFrame.origin != self.displayBounds.origin || screenFrame.size != self.displayBounds.size {
+                self.displayBounds = screenFrame
+                self.window?.setFrame(screenFrame, display: true)
+            }
+        }
+    }
     private var contentView: NSView?
     private var displayBounds: CGRect = .zero
 

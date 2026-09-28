@@ -395,8 +395,32 @@ def cmd_start(args):
         min_padding=min_padding_int,
         extra_factors=extra_factors,
     )
+    # Watchdog: if our parent dies we are reparented to init (ppid 1).
+    # Record the parent at start; only act when we started with a real
+    # parent (ppid != 1). A terminal closing also reparents, and exiting
+    # non-zero there is fine.
+    parent_pid = os.getppid()
+    # SIGTERM (menu-bar stop escalation, launchd, etc.) shuts down cleanly
+    # with exit 0, like Ctrl+C.
+    _prev_sigterm = signal.getsignal(signal.SIGTERM)
+
+    def _handle_sigterm(sig, frame):
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, _handle_sigterm)
+    helper_exit_code: int | None = None
     try:
         while True:
+            try:
+                if parent_pid != 1 and os.getppid() == 1:
+                    print(
+                        f"\n{error('Error:')} parent process died, shutting down",
+                        file=sys.stderr,
+                    )
+                    helper_exit_code = 1
+                    break
+            except OSError:
+                pass
             # Check if helper is still running
             if helper.poll() is not None:
                 stderr_out = stderr_tail.text() if stderr_tail is not None else ""
@@ -406,6 +430,8 @@ def cmd_start(args):
                 )
                 if stderr_out:
                     print(f"Helper stderr: {stderr_out}", file=sys.stderr)
+                code = helper.returncode
+                helper_exit_code = code if code else 1
                 break
 
             try:
@@ -415,11 +441,19 @@ def cmd_start(args):
                 logger.debug("Live session send failed: %s", e)
                 if helper.poll() is None:
                     print(f"\n{error('Error:')} lost connection to Swift helper", file=sys.stderr)
+                    helper_exit_code = 1
                     break
+                code = helper.returncode
+                helper_exit_code = code if code else 1
+                break
 
     except KeyboardInterrupt:
         print(f"\n{bold('Shutting down...')}")
     finally:
+        try:
+            signal.signal(signal.SIGTERM, _prev_sigterm)
+        except OSError, ValueError:
+            pass
         server.shutdown()
         detector.close()
         if show_stats and stats is not None:
@@ -432,6 +466,9 @@ def cmd_start(args):
                 helper.kill()
                 helper.wait()
         print(bold("Stopped."))
+    if helper_exit_code:
+        return helper_exit_code
+    return 0
 
 
 def _expected_output(input_path: str, model: str | None) -> str:
@@ -1195,4 +1232,6 @@ def main():
     }
 
     faulthandler.enable()
-    commands[args.command](args)
+    result = commands[args.command](args)
+    if isinstance(result, int) and result != 0:
+        sys.exit(result)

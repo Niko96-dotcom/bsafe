@@ -7,6 +7,7 @@ let package = Package(
     products: [
         .executable(name: "BsafeCapture", targets: ["BsafeCapture"]),
         .executable(name: "bsafe-replay", targets: ["BsafeReplay"]),
+        .executable(name: "BsafeMenuBar", targets: ["BsafeMenuBar"]),
     ],
     targets: [
         .target(
@@ -23,10 +24,24 @@ let package = Package(
             dependencies: ["BsafeCore"],
             path: "Sources/BsafeReplay"
         ),
+        .target(
+            name: "BsafeMenuKit",
+            path: "Sources/BsafeMenuKit"
+        ),
+        .executableTarget(
+            name: "BsafeMenuBar",
+            dependencies: ["BsafeMenuKit"],
+            path: "Sources/BsafeMenuBar"
+        ),
         .testTarget(
             name: "BsafeCoreTests",
             dependencies: ["BsafeCore"],
             path: "Tests/BsafeCoreTests"
+        ),
+        .testTarget(
+            name: "BsafeMenuKitTests",
+            dependencies: ["BsafeMenuKit"],
+            path: "Tests/BsafeMenuKitTests"
         ),
     ]
 )
