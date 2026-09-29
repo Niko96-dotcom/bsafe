@@ -735,3 +735,15 @@ def test_config_line_shows_still_scales(capsys):
     out = capsys.readouterr().out
     assert "still_scales=1.0,1.5" in out
     assert "still_period=1.0" in out
+
+
+def test_keep_conf_default_zero_and_invalid():
+    args = _args([])
+    _validate_live_args(args)
+    assert args.keep_conf == 0.1
+    args = _args(["--keep-conf", "0"])
+    _validate_live_args(args)
+    assert args.keep_conf is None
+    args = _args(["--keep-conf", "0.3"])
+    with pytest.raises(SystemExit):
+        _validate_live_args(args)

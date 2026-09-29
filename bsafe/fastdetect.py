@@ -46,6 +46,9 @@ _NUM_CLASSES = len(NUDENET_LABELS)
 _SCORE_OFFSET = 4
 _DETECT_THRESHOLD = 0.2
 _NMS_SCORE = 0.25
+# Detections at or above this confidence may start a censor track; with a
+# lower ``score_floor`` the weaker ones only keep existing tracks alive.
+STRONG_CONFIDENCE = _NMS_SCORE
 _NMS_IOU = 0.45
 
 
@@ -78,8 +81,13 @@ def postprocess(
     frame_width: int,
     frame_height: int,
     min_confidence: float = 0.0,
+    score_floor: float = _NMS_SCORE,
 ) -> list[Detection]:
     """Decode a NudeNet output0 tensor into detections.
+
+    ``score_floor`` is the NMS score threshold (default 0.25). A lower floor
+    also returns weaker detections; NMS runs in score order, so the set at or
+    above 0.25 is unchanged by it.
 
     ``output`` has shape (1, 22, N). Vectorized over N (no Python loop over
     rows); semantics match nudenet 3.4.2 ``_postprocess`` with no
@@ -92,7 +100,7 @@ def postprocess(
     scores = out[_SCORE_OFFSET : _SCORE_OFFSET + _NUM_CLASSES]  # (18, N)
     class_ids = np.argmax(scores, axis=0)  # (N,)
     max_scores = np.max(scores, axis=0)  # (N,)
-    keep = max_scores >= _DETECT_THRESHOLD
+    keep = max_scores >= min(_DETECT_THRESHOLD, score_floor)
     if not bool(np.any(keep)):
         return []
     cx = out[0][keep]
@@ -118,7 +126,7 @@ def postprocess(
     kept_scores = kept_scores[visible]
     boxes = np.stack([x0, y0, w, h], axis=1).tolist()
     scores_list = kept_scores.tolist()
-    indices = cv2.dnn.NMSBoxes(boxes, scores_list, _NMS_SCORE, _NMS_IOU)
+    indices = cv2.dnn.NMSBoxes(boxes, scores_list, score_floor, _NMS_IOU)
     if len(indices) == 0:
         return []
     order = np.asarray(indices).reshape(-1)
@@ -152,6 +160,7 @@ class FullFrameNudeDetector:
         *,
         use_coreml: bool = True,
         compute_units: str = "CPUAndGPU",
+        score_floor: float = _NMS_SCORE,
     ):
         import onnxruntime
 
@@ -162,6 +171,7 @@ class FullFrameNudeDetector:
             model_path = os.path.join(os.path.dirname(nudenet.__file__), "320n.onnx")
         self.model_path = model_path
         self.min_confidence = min_confidence
+        self.score_floor = score_floor
         self.use_coreml = use_coreml
         self.compute_units = compute_units
         self._sessions: dict[tuple[int, int], tuple] = {}
@@ -264,7 +274,7 @@ class FullFrameNudeDetector:
         blob, _, _ = preprocess(frame)
         assert self._session is not None and self._input_name is not None
         output = self._session.run(None, {self._input_name: blob})[0]
-        return postprocess(output, width, height, self.min_confidence)
+        return postprocess(output, width, height, self.min_confidence, self.score_floor)
 
     def close(self) -> None:
         """Drop cached sessions. Safe to call twice."""

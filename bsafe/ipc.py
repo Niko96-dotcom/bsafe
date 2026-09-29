@@ -299,9 +299,12 @@ class FrameServer:
         frame_height: int,
         seq: int,
         boxes: list[tuple[int, int, int, int]],
+        keep_boxes: list[tuple[int, int, int, int]] | None = None,
     ):
         """Send CMD_CENSOR_SEQ boxes (in capture pixels of frame ``seq``) to Swift."""
-        self._send_to_client(pack_cmd_censor_seq(display_id, frame_width, frame_height, seq, boxes))
+        self._send_to_client(
+            pack_cmd_censor_seq(display_id, frame_width, frame_height, seq, boxes, keep_boxes)
+        )
 
     def send_censor(
         self,

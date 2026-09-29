@@ -38,6 +38,7 @@ VALID_KEYS = {
         "still_period",
         "still_scales",
         "still_after",
+        "keep_conf",
     }
     | _COMMON_KEYS,
     "video": {"fps", "chunk_frames", "enhance"} | _COMMON_KEYS,
@@ -87,6 +88,7 @@ dry_run = false
 # still_scales = "1.0"  # up to 3 frame-relative scales the still pass cycles through, e.g. "1.0,1.5"
 # still_period = 2.0    # seconds between still passes; default 2.0 / number of still_scales
 # still_after = 0.5
+# keep_conf = 0.1       # detections from keep_conf up to 0.25 only keep existing boxes alive; 0 = off
 
 [video]
 # fps =              # unset = use native video FPS

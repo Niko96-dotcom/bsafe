@@ -198,7 +198,13 @@ public final class DisplayTracker {
     }
 
     @discardableResult
-    public func applyDetections(seq: UInt32, boxes: [TrackBox]) -> Bool {
+    /// Apply the detections for frame `seq`. `boxes` can start tracks;
+    /// `keepBoxes` (low-confidence detections) only keep existing tracks
+    /// alive: they are matched to tracks left unmatched by `boxes` (ByteTrack's
+    /// second stage) and never create tracks.
+    public func applyDetections(seq: UInt32, boxes strongBoxes: [TrackBox], keepBoxes: [TrackBox] = []) -> Bool {
+        let boxes = strongBoxes + keepBoxes
+        let strongCount = strongBoxes.count
         guard let idx = history.lastIndex(where: { $0.seq == seq }) else { return false }
         guard let latest = history.last,
               let latestSeqV = latestSeq,
@@ -255,41 +261,47 @@ public final class DisplayTracker {
             primed.append(boxes[i].offsetBy(dx: shifts[i].dx, dy: shifts[i].dy))
         }
 
-        // Greedy matching
+        // Greedy matching: strong detections first, then keep-only detections
+        // against the tracks still unmatched.
         struct Pair {
             var ti: Int
             var di: Int
             var score: Double
         }
-        var pairs = [Pair]()
-        for ti in 0..<tracks.count {
-            for di in 0..<primed.count {
-                let io = tracks[ti].box.iou(primed[di])
-                if io >= 0.1 {
-                    pairs.append(Pair(ti: ti, di: di, score: io))
-                } else {
-                    let tcx = tracks[ti].box.centerX
-                    let tcy = tracks[ti].box.centerY
-                    let dcx = primed[di].centerX
-                    let dcy = primed[di].centerY
-                    if tracks[ti].box.contains(x: dcx, y: dcy)
-                        || primed[di].contains(x: tcx, y: tcy)
-                    {
-                        pairs.append(Pair(ti: ti, di: di, score: 0.05))
-                    }
-                }
-            }
-        }
-        pairs.sort { $0.score > $1.score }
         var matchedT = Set<Int>()
         var matchedD = Set<Int>()
         var matchForT = [Int: Int]() // ti -> di
-        for p in pairs {
-            if matchedT.contains(p.ti) || matchedD.contains(p.di) { continue }
-            matchedT.insert(p.ti)
-            matchedD.insert(p.di)
-            matchForT[p.ti] = p.di
+        func matchStage(_ detRange: Range<Int>) {
+            var pairs = [Pair]()
+            for ti in 0..<tracks.count where !matchedT.contains(ti) {
+                for di in detRange {
+                    let io = tracks[ti].box.iou(primed[di])
+                    if io >= 0.1 {
+                        pairs.append(Pair(ti: ti, di: di, score: io))
+                    } else {
+                        let tcx = tracks[ti].box.centerX
+                        let tcy = tracks[ti].box.centerY
+                        let dcx = primed[di].centerX
+                        let dcy = primed[di].centerY
+                        if tracks[ti].box.contains(x: dcx, y: dcy)
+                            || primed[di].contains(x: tcx, y: tcy)
+                        {
+                            pairs.append(Pair(ti: ti, di: di, score: 0.05))
+                        }
+                    }
+                }
+            }
+            pairs.sort { $0.score > $1.score }
+            for p in pairs {
+                if matchedT.contains(p.ti) || matchedD.contains(p.di) { continue }
+                matchedT.insert(p.ti)
+                matchedD.insert(p.di)
+                matchForT[p.ti] = p.di
+            }
         }
+        matchStage(0..<strongCount)
+        matchStage(strongCount..<primed.count)
+        let oldCount = tracks.count
 
         let k = config.shrinkAlpha
         // Update matched
@@ -322,8 +334,8 @@ public final class DisplayTracker {
                 }
             }
         }
-        // New tracks for unmatched detections
-        for di in 0..<primed.count {
+        // New tracks for unmatched strong detections
+        for di in 0..<strongCount {
             if matchedD.contains(di) { continue }
             let s = shifts[di]
             let vel: Shift
@@ -338,13 +350,7 @@ public final class DisplayTracker {
             tracks.append(t)
             // newly appended tracks are never in matchedT; no misses handling needed
         }
-        // Unmatched tracks miss
-        // Note: indices of original tracks are 0..<oldCount; new tracks appended after.
-        // We need old count to avoid touching new tracks.
-        // matchedT only refers to old indices, so iterate old range.
-        // To get old count: total - (unmatched detection count). Recompute:
-        let newCount = primed.count - matchedD.count
-        let oldCount = tracks.count - newCount
+        // Unmatched tracks miss (new tracks are appended after oldCount).
         for ti in 0..<oldCount {
             if matchForT[ti] == nil {
                 tracks[ti].misses += 1

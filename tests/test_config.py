@@ -30,6 +30,7 @@ def test_start_valid_keys():
             "still_period",
             "still_scales",
             "still_after",
+            "keep_conf",
         }
         | VALID_KEYS["common"]
     )

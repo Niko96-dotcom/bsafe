@@ -9,6 +9,7 @@ private struct PipelineStats {
     var ingestMs: Double = 0
     var ageMs: Double = 0
     var sent: Int = 0
+    var refed: Int = 0
     var detApplied: Int = 0
     var detIgnored: Int = 0
     var catchupMs: Double = 0
@@ -65,6 +66,22 @@ final class DisplayPipeline: NSObject, SCStreamOutput {
     private var latestPts: Double?
     private var lastSentSeq: UInt32?
     private var creditPending = false
+    /// Host time of the last ingested frame (real or re-fed).
+    private var lastIngestHost: Double = 0
+    private var idleTimer: DispatchSourceTimer?
+    /// SCK delivers no complete frames while the screen is unchanged, so a
+    /// static screen would be detected once and never again (no still pass).
+    /// After this long without a frame, the latest frame is re-fed as a new
+    /// frame (new seq, current host time).
+    static let idleRefeedSeconds: Double = 0.5
+    /// Host time of the last applied detection; 0 until the first one (the
+    /// stale cover is armed only after detection has worked once).
+    private var lastDetectionHost: Double = 0
+    private var staleCover = false
+    /// Fail closed: when frames keep changing but no detection has been
+    /// applied for this long (detector hung or failing), pixelate the whole
+    /// display until detections resume.
+    static let staleCoverSeconds: Double = 2.0
     private var recentPts: [(seq: UInt32, pts: Double)] = []
 
     private let statsLock = NSLock()
@@ -101,6 +118,38 @@ final class DisplayPipeline: NSObject, SCStreamOutput {
         self.restartQueue = DispatchQueue(label: "bsafe.restart.\(displayID)")
         super.init()
         self.pipelineDelegate = PipelineStreamDelegate(pipeline: self)
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        let tick = Self.idleRefeedSeconds / 2
+        timer.schedule(deadline: .now() + tick, repeating: tick, leeway: .milliseconds(50))
+        timer.setEventHandler { [weak self] in self?.idleRefeed() }
+        timer.resume()
+        idleTimer = timer
+    }
+
+    deinit {
+        idleTimer?.cancel()
+    }
+
+    /// Re-feed the latest frame when a credit has waited on a static screen
+    /// for `idleRefeedSeconds`, so detection (and the still pass) keeps
+    /// running. Skipped during capture outages. Runs on `queue`.
+    private func idleRefeed() {
+        if updateStaleCover() {
+            publishRender()
+        }
+        guard creditPending, let buf = latestBuffer else { return }
+        let hostNow = CMClockGetTime(CMClockGetHostTimeClock()).seconds
+        guard hostNow - lastIngestHost >= Self.idleRefeedSeconds else { return }
+        streamLock.lock()
+        let inOutage = outageStart != nil
+        streamLock.unlock()
+        guard !inOutage else { return }
+        if statsEnabled {
+            statsLock.lock()
+            stats.refed += 1
+            statsLock.unlock()
+        }
+        ingest(buf, pts: hostNow, hostNow: hostNow)
     }
 
     /// Restart config for this display. Must be set before startStream so a
@@ -458,6 +507,14 @@ final class DisplayPipeline: NSObject, SCStreamOutput {
 
         let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer).seconds
         let hostNow = CMClockGetTime(CMClockGetHostTimeClock()).seconds
+        ingest(imageBuffer, pts: pts, hostNow: hostNow)
+    }
+
+    /// Ingest one frame into the tracker and, when a credit is pending, send it
+    /// for detection. Called for every complete SCK frame and, on a static
+    /// screen, for the re-fed latest frame (see `idleRefeed`).
+    private func ingest(_ imageBuffer: CVImageBuffer, pts: Double, hostNow: Double) {
+        lastIngestHost = hostNow
         let w = CVPixelBufferGetWidth(imageBuffer)
         let h = CVPixelBufferGetHeight(imageBuffer)
 
@@ -545,7 +602,9 @@ final class DisplayPipeline: NSObject, SCStreamOutput {
     }
 
     /// Apply Python detections for frame `seq` (called via queue.async from the reader thread).
-    func handleDetections(frameWidth: Int, frameHeight: Int, seq detSeq: UInt32, boxes: [TrackBox]) {
+    func handleDetections(
+        frameWidth: Int, frameHeight: Int, seq detSeq: UInt32, boxes: [TrackBox], keepBoxes: [TrackBox] = []
+    ) {
         guard frameWidth == captureWidth, frameHeight == captureHeight else {
             if statsEnabled {
                 statsLock.lock()
@@ -554,7 +613,8 @@ final class DisplayPipeline: NSObject, SCStreamOutput {
             }
             return
         }
-        let ok = tracker.applyDetections(seq: detSeq, boxes: boxes)
+        let ok = tracker.applyDetections(seq: detSeq, boxes: boxes, keepBoxes: keepBoxes)
+        lastDetectionHost = CMClockGetTime(CMClockGetHostTimeClock()).seconds
         if statsEnabled {
             statsLock.lock()
             if ok {
@@ -584,7 +644,7 @@ final class DisplayPipeline: NSObject, SCStreamOutput {
             return n > 0 ? sum / Double(n) : 0.0
         }
         let line = String(
-            format: "display=%u fps=%.1f ingest_ms=%.2f age_ms=%.1f sent=%d det=%d/%d catchup_ms=%.1f render_hz=%.1f pixelate_ms=%.2f",
+            format: "display=%u fps=%.1f ingest_ms=%.2f age_ms=%.1f sent=%d det=%d/%d catchup_ms=%.1f render_hz=%.1f pixelate_ms=%.2f refed=%d",
             displayID,
             Double(s.frames) / interval,
             avg(s.ingestMs, s.frames),
@@ -594,7 +654,8 @@ final class DisplayPipeline: NSObject, SCStreamOutput {
             s.detIgnored,
             avg(s.catchupMs, s.catchupN),
             Double(drains) / interval,
-            avg(s.pixelMs, s.pixelN)
+            avg(s.pixelMs, s.pixelN),
+            s.refed
         )
         return line
     }
@@ -622,19 +683,40 @@ final class DisplayPipeline: NSObject, SCStreamOutput {
         return out
     }
 
+    /// Re-evaluate the stale cover; returns true when it changed.
+    private func updateStaleCover() -> Bool {
+        let now = CMClockGetTime(CMClockGetHostTimeClock()).seconds
+        let stale = lastDetectionHost > 0
+            && now - lastDetectionHost > Self.staleCoverSeconds
+            && lastIngestHost > lastDetectionHost
+        guard stale != staleCover else { return false }
+        staleCover = stale
+        fputs(
+            stale
+                ? "BsafeCapture: display \(displayID): no detections for \(Self.staleCoverSeconds) s, pixelating the whole display\n"
+                : "BsafeCapture: display \(displayID): detections resumed\n",
+            stderr)
+        return true
+    }
+
     private func publishRender() {
         let style = styleProvider()
         let now = CMClockGetTime(CMClockGetHostTimeClock()).seconds
-        let boxes = tracker.renderBoxes(now: now, presentLead: presentLead)
+        _ = updateStaleCover()
 
         var rects: [CGRect] = []
-        rects.reserveCapacity(boxes.count)
-        for b in boxes {
-            let x0 = floor(b.x)
-            let y0 = floor(b.y)
-            let x1 = ceil(b.x + b.w)
-            let y1 = ceil(b.y + b.h)
-            rects.append(CGRect(x: x0, y: y0, width: x1 - x0, height: y1 - y0))
+        if staleCover {
+            rects.append(CGRect(x: 0, y: 0, width: captureWidth, height: captureHeight))
+        } else {
+            let boxes = tracker.renderBoxes(now: now, presentLead: presentLead)
+            rects.reserveCapacity(boxes.count)
+            for b in boxes {
+                let x0 = floor(b.x)
+                let y0 = floor(b.y)
+                let x1 = ceil(b.x + b.w)
+                let y1 = ceil(b.y + b.h)
+                rects.append(CGRect(x: x0, y: y0, width: x1 - x0, height: y1 - y0))
+            }
         }
 
         var images: [CGImage?] = Array(repeating: nil, count: rects.count)

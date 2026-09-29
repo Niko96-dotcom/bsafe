@@ -242,15 +242,26 @@ def pack_cmd_censor_seq(
     frame_height: int,
     seq: int,
     boxes: list[tuple[int, int, int, int]],
+    keep_boxes: list[tuple[int, int, int, int]] | None = None,
 ) -> bytes:
-    """Pack a CMD_CENSOR_SEQ message: boxes in capture pixels of frame ``seq``."""
-    if len(boxes) > 65535:
+    """Pack a CMD_CENSOR_SEQ message: boxes in capture pixels of frame ``seq``.
+
+    ``keep_boxes`` (low-confidence detections) are appended as ``!H`` count +
+    boxes; Swift uses them only to keep existing tracks alive. Omitted when
+    empty, so the payload stays the plain box list.
+    """
+    keep_boxes = list(keep_boxes or [])
+    if len(boxes) > 65535 or len(keep_boxes) > 65535:
         raise ValueError(f"Too many boxes: {len(boxes)} exceeds max 65535 (uint16)")
     parts = [
         struct.pack(CENSOR_SEQ_HEADER_FMT, display_id, frame_width, frame_height, seq, len(boxes))
     ]
     for x, y, w, h in boxes:
         parts.append(struct.pack(CENSOR_BOX_FMT, x, y, w, h))
+    if keep_boxes:
+        parts.append(struct.pack("!H", len(keep_boxes)))
+        for x, y, w, h in keep_boxes:
+            parts.append(struct.pack(CENSOR_BOX_FMT, x, y, w, h))
     return pack_message(CMD_CENSOR_SEQ, b"".join(parts))
 
 
@@ -275,6 +286,24 @@ def parse_censor_seq_payload(
         boxes.append((x, y, w, h))
         offset += CENSOR_BOX_SIZE
     return display_id, frame_width, frame_height, seq, boxes
+
+
+def parse_censor_seq_keep(
+    payload: bytes | bytearray | memoryview,
+) -> list[tuple[int, int, int, int]]:
+    """Return the optional keep-only boxes of a CMD_CENSOR_SEQ payload ([] when absent)."""
+    (box_count,) = struct.unpack_from("!H", payload, CENSOR_SEQ_HEADER_SIZE - 2)
+    offset = CENSOR_SEQ_HEADER_SIZE + box_count * CENSOR_BOX_SIZE
+    if len(payload) < offset + 2:
+        return []
+    (keep_count,) = struct.unpack_from("!H", payload, offset)
+    offset += 2
+    if len(payload) < offset + keep_count * CENSOR_BOX_SIZE:
+        raise ValueError("Censor-seq payload too short for keep boxes")
+    return [
+        struct.unpack_from(CENSOR_BOX_FMT, payload, offset + i * CENSOR_BOX_SIZE)
+        for i in range(keep_count)
+    ]
 
 
 def pack_cmd_censor_style(blur: float, pixels: float = 0.0, text: str | None = None) -> bytes:

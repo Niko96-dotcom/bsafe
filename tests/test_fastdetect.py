@@ -93,6 +93,15 @@ def test_postprocess_threshold():
     assert len(postprocess(out, w, h)) == 1
 
 
+def test_postprocess_score_floor_keeps_weak_detections():
+    out, w, h = _make_output([(50, 50, 20, 20, 6, 0.12), (150, 150, 20, 20, 3, 0.9)])
+    assert len(postprocess(out, w, h)) == 1
+    dets = postprocess(out, w, h, score_floor=0.1)
+    assert sorted(round(d.confidence, 2) for d in dets) == [0.12, 0.9]
+    out, w, h = _make_output([(50, 50, 20, 20, 6, 0.09)])
+    assert postprocess(out, w, h, score_floor=0.1) == []
+
+
 def test_postprocess_clipping():
     # Box hanging off the right/bottom edges is clipped into the frame.
     out, w, h = _make_output([(195, 195, 20, 20, 6, 0.9)], width=200, height=200)

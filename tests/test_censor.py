@@ -402,3 +402,21 @@ def test_erax_mapped_classes_covered_by_presets():
             assert canonical in all_preset_classes, (
                 f"EraX class '{erax_name}' maps to '{canonical}' which is not in any CENSOR_PRESETS"
             )
+
+
+def test_build_censor_box_sets_splits_by_confidence():
+    from bsafe.censor import build_censor_box_sets
+
+    dets = [
+        Detection("FEMALE_BREAST_EXPOSED", 0.9, (0, 0, 10, 10)),
+        Detection("FEMALE_BREAST_EXPOSED", 0.12, (5, 5, 10, 10)),
+        Detection("FEMALE_BREAST_EXPOSED", 0.2, (100, 100, 10, 10)),
+    ]
+    classes = frozenset({"FEMALE_BREAST_EXPOSED"})
+    boxes, keep = build_censor_box_sets(dets, classes, 0.0, 500, 500, 0, 0.25)
+    # Weak boxes are never merged into censor boxes, only among themselves.
+    assert boxes == [(0, 0, 10, 10)]
+    assert sorted(keep) == [(5, 5, 10, 10), (100, 100, 10, 10)]
+    boxes, keep = build_censor_box_sets(dets, classes, 0.0, 500, 500, 0, None)
+    assert keep == []
+    assert len(boxes) == 2

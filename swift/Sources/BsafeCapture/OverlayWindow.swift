@@ -194,15 +194,13 @@ final class CensorOverlay {
         // Convert capture-px boxes (top-left origin) to display points (bottom-left origin).
         let scaleX = displayW / CGFloat(frame.captureWidth)
         let scaleY = displayH / CGFloat(frame.captureHeight)
-        let maxW = displayW * 0.8
-        let maxH = displayH * 0.8
+        // No size cap: a large close-up (or the stale-detection cover) must be
+        // covered completely.
         var rects: [CGRect] = []
         rects.reserveCapacity(frame.boxes.count)
         for b in frame.boxes {
-            var w = b.width * scaleX
-            var h = b.height * scaleY
-            if w > maxW { w = maxW }
-            if h > maxH { h = maxH }
+            let w = b.width * scaleX
+            let h = b.height * scaleY
             let x = b.origin.x * scaleX
             let flippedY = displayH - b.origin.y * scaleY - h
             rects.append(CGRect(x: x, y: flippedY, width: w, height: h))

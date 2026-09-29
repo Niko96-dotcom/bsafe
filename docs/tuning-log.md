@@ -37,3 +37,58 @@ estimated on `estimationRegion(core)`, the central 55% (matching the suggested
 background. A core that crosses a frame edge falls back to the full core (the
 central crop breaks edge coasting). Known gaps: near frame edges and with
 `--full-censor` (3x boxes) the full or cropped region can still be mostly static.
+
+## Fail-closed and static-screen fixes (2026-09-29)
+
+Correctness fixes from the architecture review; none of them changes detection
+on the bench recordings.
+
+- **Static screens are re-detected.** ScreenCaptureKit delivers no complete
+  frames while the screen is unchanged, and a credit was only answered with a
+  new frame, so a fully static screen was detected once and never got the
+  640m still pass. `DisplayPipeline.idleRefeed` re-feeds the latest frame as a
+  new frame (new seq, current host time) once a credit has waited 0.5 s. The
+  bench recordings deliver frames continuously, so this gap never showed there.
+- **Still pass off the light loop.** `--still-model` now runs on its own thread
+  (`StillWorker` in `bsafe/live.py`). Its boxes are re-sent for the display's
+  last replied seq (merged with that frame's light detections), but only while
+  that frame is the one the still pass ran on or the screen is still still.
+  Before, the 73–170 ms pass delayed the light reply for its frame.
+- **Detection failures fail closed.** A failed light pass no longer replies with
+  an empty box list (which counted as a miss and let tracks expire). Swift
+  pixelates the whole display when frames keep changing but no detection has
+  been applied for 2 s (`DisplayPipeline.staleCoverSeconds`), armed after the
+  first detection.
+- **No box size cap.** The overlay clamped boxes to 80% of the display width and
+  height (inherited upstream code), leaving the edge of large close-ups uncovered.
+- Checked, not a bug: `NSWindow.sharingType = .none` still keeps the overlay out
+  of ScreenCaptureKit captures on macOS 26 (a `.readOnly` control window shows up).
+
+## Keep-only detections (`--keep-conf`, default 0.1)
+
+Detections from `--keep-conf` up to 0.25 (`fastdetect.STRONG_CONFIDENCE`) are
+sent as keep-only boxes (optional trailing list in `CMD_CENSOR_SEQ`). The tracker
+matches them only against tracks left unmatched by the strong detections
+(ByteTrack's second stage): a match refreshes the track like a normal match, and
+an unmatched keep box never starts a track. NMS runs in score order, so the
+strong set is unchanged by the lower floor. The old `_DETECT_THRESHOLD` 0.2 was
+dead: NMS's 0.25 score threshold dropped everything below it.
+
+Measured on the five simulated X sessions (`~/bsafe-bench/keep.sh`): Strict
+light passes (320n at 1x + 0.5,0.25) recorded down to 0.1 (`bench detect
+--score-floor 0.1`), detect time normalized to the live-calibrated 22.7 ms
+(`normtime.py`; the machine was loaded during detection), padding 0.4, min
+padding 24, 3 s persistence, GT = 640m@1x + 640m@1.5x union, no still pass.
+Mean leak / over-censor / objects missed:
+
+| keep | leak | over | missed |
+|---|---|---|---|
+| off | 5.43 | 4.20 | 10.7 |
+| 0.2 | 4.94 | 4.37 | 9.7 |
+| 0.15 | 4.51 | 4.52 | 9.1 |
+| 0.1 | 3.86 | 4.86 | 8.1 |
+
+Every session improved (leak feet 5.6 -> 2.9, armpits 9.2 -> 8.2, ass 2.6 -> 1.8,
+ass2 3.3 -> 2.3, tits 6.5 -> 4.1). For comparison, raising persistence from 1 s to
+3 s cut leak 4.8 -> 3.9 for +1.2 points of over-censor. The still pass is not
+included in this run; its boxes are strong-only.

@@ -256,6 +256,25 @@ def _validate_live_args(args):
     if not (math.isfinite(after) and after >= 0):
         print(f"{error('Error:')} --still-after must be a finite number >= 0", file=sys.stderr)
         sys.exit(1)
+    keep_conf = getattr(args, "keep_conf", None)
+    if keep_conf is None:
+        from bsafe.live import DEFAULT_KEEP_CONF
+
+        keep_conf = DEFAULT_KEEP_CONF
+    if not (math.isfinite(keep_conf) and 0 <= keep_conf < 0.25):
+        print(f"{error('Error:')} --keep-conf must be >= 0 and < 0.25", file=sys.stderr)
+        sys.exit(1)
+    # 0 turns keep-only detections off.
+    args.keep_conf = keep_conf or None
+
+
+def _strong_confidence(args, is_nudenet: bool) -> float | None:
+    """Confidence that may start a box when --keep-conf is on (None: all detections start boxes)."""
+    if not is_nudenet or getattr(args, "keep_conf", None) is None:
+        return None
+    from bsafe.fastdetect import STRONG_CONFIDENCE
+
+    return max(STRONG_CONFIDENCE, float(args.confidence or 0.0))
 
 
 def _still_model_display(args) -> str:
@@ -325,6 +344,8 @@ def _print_config(args):
             parts.append(f"still_scales={','.join(str(f) for f in scales)}")
             parts.append(f"still_period={2.0 / len(scales) if period is None else period}")
             parts.append(f"still_after={0.5 if after is None else after}")
+    if getattr(args, "keep_conf", None):
+        parts.append(f"keep_conf={args.keep_conf}")
     if getattr(args, "stats", False):
         parts.append("stats=true")
     print(f"{dim('Config:')} {', '.join(parts)}", flush=True)
@@ -409,9 +430,13 @@ def cmd_start(args):
         if is_nudenet:
             from bsafe.fastdetect import FullFrameNudeDetector
 
+            from bsafe.fastdetect import STRONG_CONFIDENCE
+
+            keep_conf = getattr(args, "keep_conf", None)
             detector = FullFrameNudeDetector(
                 model_path=resolve_model(args.model).path,
                 min_confidence=args.confidence,
+                score_floor=STRONG_CONFIDENCE if keep_conf is None else keep_conf,
             )
             still_detector = None
             if getattr(args, "still_model", None) == "640m":
@@ -477,6 +502,8 @@ def cmd_start(args):
         still_period_s=float(still_period),
         still_after_s=float(still_after),
         still_scales=still_scales,
+        still_async=True,
+        strong_confidence=_strong_confidence(args, is_nudenet),
     )
     # Watchdog: if our parent dies we are reparented to init (ppid 1).
     # Record the parent at start; only act when we started with a real
@@ -538,6 +565,7 @@ def cmd_start(args):
         except OSError, ValueError:
             pass
         server.shutdown()
+        session.close()
         detector.close()
         if still_detector is not None:
             still_detector.close()
@@ -1110,6 +1138,13 @@ def _build_parser():
         default=None,
         help="Seconds the screen must be still before the 640m pass runs (default: 0.5)",
     )
+    start_parser.add_argument(
+        "--keep-conf",
+        type=float,
+        default=None,
+        help="Detections from this confidence up to 0.25 only keep existing boxes alive "
+        "(NudeNet only; default: 0.1; 0 turns it off)",
+    )
 
     # video subcommand
     video_parser = subparsers.add_parser(
@@ -1181,6 +1216,12 @@ def _build_parser():
         help="Extra detection passes as frame-relative factors, e.g. '0.5' (the recording "
         "is already at the live capture size, so factors are relative to the frame)",
     )
+    bench_detect_parser.add_argument(
+        "--score-floor",
+        type=float,
+        default=None,
+        help="Record detections down to this confidence (default: 0.25), for --keep-conf replay",
+    )
 
     bench_replay_parser = bench_subparsers.add_parser(
         "replay", help="Replay detections through the Swift tracker and score the result"
@@ -1250,6 +1291,12 @@ def _build_parser():
         type=float,
         default=0.25,
         help="Min confidence for all GT sources (default: 0.25)",
+    )
+    bench_replay_parser.add_argument(
+        "--keep-conf",
+        type=float,
+        default=None,
+        help="Detections from this confidence up to 0.25 only keep boxes alive (default: off)",
     )
     bench_replay_parser.add_argument(
         "--covered",

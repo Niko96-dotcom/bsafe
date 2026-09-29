@@ -26,7 +26,7 @@ from statistics import fmean, median
 import cv2
 import numpy as np
 
-from bsafe.censor import build_censor_boxes, resolve_censor_classes
+from bsafe.censor import resolve_censor_classes
 from bsafe.detector import Detection, get_model_backend, resolve_model
 from bsafe.style import bold, dim, error, info, success, warn
 
@@ -518,8 +518,12 @@ def detect(
     model: str = "320n",
     confidence: float = 0.0,
     extra_scales=None,
+    score_floor: float | None = None,
 ) -> Path:
     """Run full-frame NudeNet on every frame of ``video``; write ``out_dir/dets.jsonl``.
+
+    ``score_floor`` lowers the NMS score threshold (default 0.25) so weaker
+    detections are recorded too, for keep-only replay (``--keep-conf``).
 
     Only NudeNet models are supported. ``extra_scales`` are frame-relative
     factors (the recording is already at the live capture size); when
@@ -542,7 +546,13 @@ def detect(
     print(f"Loading model {bold(model)}...")
     from bsafe.fastdetect import FullFrameNudeDetector
 
-    detector = FullFrameNudeDetector(model_path=model_info.path, min_confidence=confidence)
+    from bsafe.fastdetect import STRONG_CONFIDENCE
+
+    detector = FullFrameNudeDetector(
+        model_path=model_info.path,
+        min_confidence=confidence,
+        score_floor=STRONG_CONFIDENCE if score_floor is None else score_floor,
+    )
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
         detector.close()
@@ -668,8 +678,18 @@ def write_boxes(
     classes: frozenset[str],
     padding: float,
     min_padding: int = 0,
+    keep_conf: float | None = None,
 ) -> Path:
-    """Write boxes.jsonl: class-filtered, padded and merged boxes (same as live)."""
+    """Write boxes.jsonl: class-filtered, padded and merged boxes (same as live).
+
+    Only detections at or above ``STRONG_CONFIDENCE`` become boxes. With
+    ``keep_conf``, detections in ``[keep_conf, STRONG_CONFIDENCE)`` are written
+    as keep-only boxes (``keep``), which the tracker uses only to keep existing
+    tracks alive.
+    """
+    from bsafe.censor import build_censor_box_sets
+    from bsafe.fastdetect import STRONG_CONFIDENCE
+
     classes = frozenset(classes)
     header, records = read_dets(dets_path)
     width = int(header.get("width") or 0)
@@ -682,13 +702,19 @@ def write_boxes(
         header_line = {"type": "header", "width": width, "height": height, "frames": len(records)}
         f.write(_json(header_line) + "\n")
         for rec in records:
-            boxes = build_censor_boxes(list(rec.dets), classes, padding, width, height, min_padding)
+            floor = STRONG_CONFIDENCE if keep_conf is None else keep_conf
+            dets = [d for d in rec.dets if d.confidence >= floor]
+            boxes, keep = build_censor_box_sets(
+                dets, classes, padding, width, height, min_padding, STRONG_CONFIDENCE
+            )
             payload = {
                 "frame": rec.frame,
                 "pts": rec.pts,
                 "detect_s": rec.detect_s,
                 "boxes": [list(b) for b in boxes],
             }
+            if keep:
+                payload["keep"] = [list(b) for b in keep]
             f.write(_json(payload) + "\n")
     return out
 
@@ -1283,8 +1309,14 @@ def score(
 
     dets_by_frame, _gt_sources = _gt_dets_by_frame(header, records, gt_dets, classes, gt_conf)
     live_by_frame: dict[int, list[tuple[str, Box]]] = {}
+    from bsafe.fastdetect import STRONG_CONFIDENCE
+
     for rec in records:
-        keep = [(d.class_name, d.box) for d in rec.dets if d.class_name in classes]
+        keep = [
+            (d.class_name, d.box)
+            for d in rec.dets
+            if d.class_name in classes and d.confidence >= STRONG_CONFIDENCE
+        ]
         if keep:
             live_by_frame[rec.frame] = keep
 
@@ -1519,6 +1551,7 @@ def cmd_detect(args) -> None:
             args.output,
             model=args.model,
             extra_scales=getattr(args, "extra_scales", None),
+            score_floor=getattr(args, "score_floor", None),
         )
     except KeyboardInterrupt:
         print("\nInterrupted.", file=sys.stderr)
@@ -1569,6 +1602,9 @@ def cmd_replay(args) -> None:
             "gt_sources": list(gt_sources),
             "gt_conf": gt_conf,
         }
+        keep_conf = getattr(args, "keep_conf", None)
+        if keep_conf is not None:
+            cfg["keep_conf"] = keep_conf
         print(
             f"{dim('Config:')} censor={args.censor}, padding={_num(args.padding)}, "
             f"min_padding={min_padding}, "
@@ -1577,7 +1613,7 @@ def cmd_replay(args) -> None:
             f"overhead_ms={_num(args.overhead_ms)}"
         )
         boxes_path = write_boxes(
-            dets_path, run_dir / BOXES_NAME, classes, args.padding, min_padding
+            dets_path, run_dir / BOXES_NAME, classes, args.padding, min_padding, keep_conf
         )
         print(f"Boxes: {bold(str(boxes_path))} {dim(f'({len(records)} frames)')}")
         run_replay(

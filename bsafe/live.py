@@ -10,6 +10,7 @@ Frames stay in memory only; never written to disk, never logged.
 import logging
 import math
 import queue
+import threading
 import time
 
 import numpy as np
@@ -26,6 +27,10 @@ AUTO_EXTRA_SCALES: tuple[float, ...] = (0.5,)
 MAX_EXTRA_SCALES = 3
 
 STILL_SHIFT_PX = 0.5
+
+# Detections from this confidence up to fastdetect.STRONG_CONFIDENCE only keep
+# existing tracks alive (docs/tuning-log.md, keep-only detections).
+DEFAULT_KEEP_CONF = 0.1
 
 
 def parse_extra_scales(raw) -> tuple[float, ...] | None:
@@ -275,6 +280,69 @@ class StillnessTracker:
         return None
 
 
+class StillWorker:
+    """Runs still-pass detections off the light-detection thread.
+
+    One job at a time: ``submit`` returns False while a job is running. The
+    finished result is picked up with ``take``. The detector is only touched
+    under ``lock`` so ``prepare`` from the main thread cannot race a run.
+    """
+
+    def __init__(self, detector):
+        self._detector = detector
+        self.lock = threading.Lock()
+        self._cv = threading.Condition()
+        self._job = None
+        self._result = None
+        self._busy = False
+        self._stop = False
+        self._thread = threading.Thread(target=self._run, name="bsafe-still", daemon=True)
+        self._thread.start()
+
+    def submit(self, job) -> bool:
+        """Queue ``(display_id, seq, frame, scale)``; False while busy."""
+        with self._cv:
+            if self._busy or self._stop:
+                return False
+            self._busy = True
+            self._job = job
+            self._cv.notify()
+            return True
+
+    def take(self):
+        """Return ``(display_id, seq, detections)`` once, or None."""
+        with self._cv:
+            result, self._result = self._result, None
+            return result
+
+    def close(self, timeout: float = 5.0) -> None:
+        with self._cv:
+            self._stop = True
+            self._cv.notify()
+        self._thread.join(timeout)
+
+    def _run(self) -> None:
+        from bsafe.fastdetect import detect_at_scale
+
+        while True:
+            with self._cv:
+                while self._job is None and not self._stop:
+                    self._cv.wait()
+                if self._stop:
+                    return
+                display_id, seq, frame, scale = self._job
+                self._job = None
+            try:
+                with self.lock:
+                    dets = list(detect_at_scale(self._detector, frame, scale))
+            except Exception:
+                logger.exception("Live still detection failed")
+                dets = []
+            with self._cv:
+                self._result = (display_id, seq, dets)
+                self._busy = False
+
+
 class LiveSession:
     """Testable heart of cmd_start: credits, detection, seq-tagged boxes."""
 
@@ -296,6 +364,8 @@ class LiveSession:
         still_period_s: float = 2.0,
         still_after_s: float = 0.5,
         still_scales: tuple[float, ...] = (1.0,),
+        still_async: bool = False,
+        strong_confidence: float | None = None,
     ):
         self._server = server
         self._detector = detector
@@ -316,6 +386,63 @@ class LiveSession:
         self._still_runs: dict = {}
         self._still_tracker = StillnessTracker() if still_detector is not None else None
         self._last_still_run: dict = {}
+        # Async still pass: the heavy model runs on its own thread so it never
+        # stalls the light loop. Its boxes are re-sent for the last replied
+        # frame of that display while the screen is still still.
+        self._still_worker = (
+            StillWorker(still_detector) if still_detector is not None and still_async else None
+        )
+        # display_id -> (seq, width, height, light detections, seconds_still)
+        self._last_reply: dict = {}
+        # With a keep floor, detections below this only keep tracks alive.
+        self._strong_confidence = strong_confidence
+
+    def close(self) -> None:
+        """Stop the async still worker (if any)."""
+        if self._still_worker is not None:
+            self._still_worker.close()
+
+    def _build_boxes(self, detections, width, height):
+        """Return (censor boxes, keep-only boxes) for one frame."""
+        from bsafe.censor import FULL_CENSOR_MULTIPLIER, build_censor_box_sets, expand_boxes
+
+        boxes, keep = build_censor_box_sets(
+            detections,
+            self._censor_classes,
+            self._padding,
+            width,
+            height,
+            self._min_padding,
+            self._strong_confidence,
+        )
+        if self._full_censor:
+            boxes = expand_boxes(boxes, FULL_CENSOR_MULTIPLIER, width, height)
+            keep = expand_boxes(keep, FULL_CENSOR_MULTIPLIER, width, height)
+        return boxes, keep
+
+    def flush_still_results(self) -> bool:
+        """Send finished async still-pass boxes; True when something was sent.
+
+        The result is merged with the light detections of the display's last
+        replied frame and re-sent for that seq, but only while that frame is
+        the one the still pass ran on or the screen is still still (otherwise
+        the boxes would land on moved content).
+        """
+        if self._still_worker is None:
+            return False
+        result = self._still_worker.take()
+        if result is None:
+            return False
+        display_id, seq, still_dets = result
+        last = self._last_reply.get(display_id)
+        if not still_dets or last is None:
+            return False
+        last_seq, width, height, light_dets, seconds_still = last
+        if last_seq != seq and seconds_still is None:
+            return False
+        boxes, keep = self._build_boxes(list(light_dets) + still_dets, width, height)
+        self._server.send_censor_seq(display_id, width, height, last_seq, boxes, keep)
+        return True
 
     def _emit(self, text: str) -> None:
         try:
@@ -341,8 +468,14 @@ class LiveSession:
                 if self._still_detector is not None and hasattr(self._still_detector, "prepare"):
                     from bsafe.fastdetect import extra_size
 
-                    for f in self._still_scales:
-                        self._still_detector.prepare(*extra_size(cw, ch, f))
+                    lock = (
+                        self._still_worker.lock
+                        if self._still_worker is not None
+                        else threading.Lock()
+                    )
+                    with lock:
+                        for f in self._still_scales:
+                            self._still_detector.prepare(*extra_size(cw, ch, f))
                 elapsed_ms = (self._time_fn() - t0) * 1000.0
                 provider = getattr(self._detector, "provider", "cpu")
                 self._emit(
@@ -371,12 +504,14 @@ class LiveSession:
 
     def step(self, timeout: float = 0.1) -> bool:
         self.drain_display_events()
+        self.flush_still_results()
         try:
             meta, pixels, receipt_mono = self._server.frame_queue.get(timeout=timeout)
         except queue.Empty:
             return False
         detect_start = self._time_fn()
         detect_s = 0.0
+        seconds_still = None
         try:
             frame = bgra_view(meta, pixels)
             if self._is_nudenet:
@@ -403,19 +538,23 @@ class LiveSession:
                     if seconds_still is not None and seconds_still >= self._still_after_s:
                         last_run = self._last_still_run.get(meta.display_id)
                         if last_run is None or now - last_run >= self._still_period_s:
-                            attempted_still = True
-                            from bsafe.fastdetect import detect_at_scale
-
                             run = self._still_runs.get(meta.display_id, 0)
-                            self._still_runs[meta.display_id] = run + 1
-                            still_dets = detect_at_scale(
-                                self._still_detector,
-                                frame,
-                                self._still_scales[run % len(self._still_scales)],
-                            )
-                            if still_dets:
-                                detections = list(detections) + list(still_dets)
-                            self._last_still_run[meta.display_id] = now
+                            scale = self._still_scales[run % len(self._still_scales)]
+                            if self._still_worker is not None:
+                                # Copy: the frame buffer belongs to the reader.
+                                job = (meta.display_id, meta.seq, np.array(frame), scale)
+                                if self._still_worker.submit(job):
+                                    self._still_runs[meta.display_id] = run + 1
+                                    self._last_still_run[meta.display_id] = now
+                            else:
+                                attempted_still = True
+                                from bsafe.fastdetect import detect_at_scale
+
+                                self._still_runs[meta.display_id] = run + 1
+                                still_dets = detect_at_scale(self._still_detector, frame, scale)
+                                if still_dets:
+                                    detections = list(detections) + list(still_dets)
+                                self._last_still_run[meta.display_id] = now
                 except Exception:
                     now_exc = self._time_fn()
                     if now_exc - self._last_exc_log >= _ERROR_LOG_INTERVAL_S:
@@ -435,30 +574,29 @@ class LiveSession:
                         d.box,
                         meta.display_id,
                     )
-            from bsafe.censor import (
-                FULL_CENSOR_MULTIPLIER,
-                build_censor_boxes,
-                expand_boxes,
-            )
-
-            boxes = build_censor_boxes(
-                detections,
-                self._censor_classes,
-                self._padding,
-                meta.width,
-                meta.height,
-                self._min_padding,
-            )
-            if self._full_censor:
-                boxes = expand_boxes(boxes, FULL_CENSOR_MULTIPLIER, meta.width, meta.height)
+            boxes, keep = self._build_boxes(detections, meta.width, meta.height)
+            if self._still_worker is not None:
+                self._last_reply[meta.display_id] = (
+                    meta.seq,
+                    meta.width,
+                    meta.height,
+                    list(detections),
+                    seconds_still,
+                )
         except Exception:
             now = self._time_fn()
             if now - self._last_exc_log >= _ERROR_LOG_INTERVAL_S:
                 logger.exception("Live detection failed")
                 self._last_exc_log = now
             detect_s = now - detect_start
-            boxes = []
-        self._server.send_censor_seq(meta.display_id, meta.width, meta.height, meta.seq, boxes)
+            # Fail closed: an empty reply would count as a missed pass and let
+            # tracks expire. Send nothing; Swift keeps the current boxes and
+            # pixelates the whole display if detection stays down.
+            boxes = None
+        if boxes is not None:
+            self._server.send_censor_seq(
+                meta.display_id, meta.width, meta.height, meta.seq, boxes, keep
+            )
         self._server.request_frame(meta.display_id)
         if self._stats is not None:
             send_mono = self._time_fn()

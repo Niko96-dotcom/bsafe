@@ -112,8 +112,12 @@ func parseStart(_ payload: Data, fallbackFps: Int) -> StartParams {
 // MARK: - CMD_CENSOR_SEQ parsing
 
 /// Parse CMD_CENSOR_SEQ payload: `!IIIIH` (display_id, frame_w, frame_h, seq, box_count)
-/// then box_count x `!iiii` (x, y, w, h) in capture pixels of frame seq.
-func parseCensorSeq(_ data: Data) -> (displayID: UInt32, frameW: Int, frameH: Int, seq: UInt32, boxes: [TrackBox])? {
+/// then box_count x `!iiii` (x, y, w, h) in capture pixels of frame seq, then
+/// optionally `!H` keep_count and keep_count x `!iiii` keep-only boxes
+/// (low-confidence detections that may only keep existing tracks alive).
+func parseCensorSeq(_ data: Data) -> (
+    displayID: UInt32, frameW: Int, frameH: Int, seq: UInt32, boxes: [TrackBox], keepBoxes: [TrackBox]
+)? {
     let headerSize = 18  // 4 + 4 + 4 + 4 + 2
     guard data.count >= headerSize else { return nil }
 
@@ -121,23 +125,33 @@ func parseCensorSeq(_ data: Data) -> (displayID: UInt32, frameW: Int, frameH: In
     let frameW = data.withUnsafeBytes { $0.load(fromByteOffset: 4, as: UInt32.self).bigEndian }
     let frameH = data.withUnsafeBytes { $0.load(fromByteOffset: 8, as: UInt32.self).bigEndian }
     let seq = data.withUnsafeBytes { $0.load(fromByteOffset: 12, as: UInt32.self).bigEndian }
-    let boxCount = (Int(data[16]) << 8) | Int(data[17])
 
-    guard data.count >= headerSize + Int(boxCount) * 16 else { return nil }
-
-    var boxes: [TrackBox] = []
-    boxes.reserveCapacity(Int(boxCount))
-    for i in 0..<Int(boxCount) {
-        let offset = headerSize + i * 16
-        let x = data.withUnsafeBytes { $0.load(fromByteOffset: offset, as: Int32.self).bigEndian }
-        let y = data.withUnsafeBytes { $0.load(fromByteOffset: offset + 4, as: Int32.self).bigEndian }
-        let w = data.withUnsafeBytes { $0.load(fromByteOffset: offset + 8, as: Int32.self).bigEndian }
-        let h = data.withUnsafeBytes { $0.load(fromByteOffset: offset + 12, as: Int32.self).bigEndian }
-        guard w > 0, h > 0 else { continue }
-        boxes.append(TrackBox(x: Double(x), y: Double(y), w: Double(w), h: Double(h)))
+    func readBoxes(at start: Int, count: Int) -> [TrackBox]? {
+        guard data.count >= start + count * 16 else { return nil }
+        var out: [TrackBox] = []
+        out.reserveCapacity(count)
+        for i in 0..<count {
+            let offset = start + i * 16
+            let x = data.withUnsafeBytes { $0.load(fromByteOffset: offset, as: Int32.self).bigEndian }
+            let y = data.withUnsafeBytes { $0.load(fromByteOffset: offset + 4, as: Int32.self).bigEndian }
+            let w = data.withUnsafeBytes { $0.load(fromByteOffset: offset + 8, as: Int32.self).bigEndian }
+            let h = data.withUnsafeBytes { $0.load(fromByteOffset: offset + 12, as: Int32.self).bigEndian }
+            guard w > 0, h > 0 else { continue }
+            out.append(TrackBox(x: Double(x), y: Double(y), w: Double(w), h: Double(h)))
+        }
+        return out
     }
 
-    return (displayID, Int(frameW), Int(frameH), seq, boxes)
+    let boxCount = (Int(data[16]) << 8) | Int(data[17])
+    guard let boxes = readBoxes(at: headerSize, count: boxCount) else { return nil }
+    var keepBoxes: [TrackBox] = []
+    let keepHeader = headerSize + boxCount * 16
+    if data.count >= keepHeader + 2 {
+        let keepCount = (Int(data[keepHeader]) << 8) | Int(data[keepHeader + 1])
+        guard let keep = readBoxes(at: keepHeader + 2, count: keepCount) else { return nil }
+        keepBoxes = keep
+    }
+    return (displayID, Int(frameW), Int(frameH), seq, boxes, keepBoxes)
 }
 
 // MARK: - Permission check (early exit)
@@ -423,7 +437,7 @@ DispatchQueue.global().async {
                     pipe.queue.async {
                         pipe.handleDetections(
                             frameWidth: det.frameW, frameHeight: det.frameH,
-                            seq: det.seq, boxes: det.boxes
+                            seq: det.seq, boxes: det.boxes, keepBoxes: det.keepBoxes
                         )
                     }
                 }

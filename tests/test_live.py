@@ -109,10 +109,12 @@ class _FakeServer:
         self.sends: list = []
         self.requests: list = []
         self.calls: list = []
+        self.keeps: list = []
 
-    def send_censor_seq(self, display_id, w, h, seq, boxes):
+    def send_censor_seq(self, display_id, w, h, seq, boxes, keep_boxes=None):
         self.sends.append((display_id, w, h, seq, list(boxes)))
         self.calls.append(("send", display_id, w, h, seq, list(boxes)))
+        self.keeps.append(list(keep_boxes or []))
 
     def request_frame(self, display_id):
         self.requests.append(display_id)
@@ -281,13 +283,13 @@ def test_step_zero_detections_sends_empty():
     assert server.requests == [1]
 
 
-def test_step_detector_error_sends_empty_and_requests_next():
+def test_step_detector_error_sends_nothing_and_requests_next():
     meta, pixels, receipt = _raw_frame()
     server = _FakeServer([(meta, pixels, receipt)])
     det = _FakeNude(raise_=True)
     sess = _session(server, det, print_fn=lambda *a, **k: None)
     assert sess.step(0.01) is True
-    assert server.sends[0][4] == []
+    assert server.sends == []
     assert server.requests == [1]
 
 
@@ -729,3 +731,119 @@ def test_parse_still_scales():
     for bad in ("", "a", "1.0,1.0", "0.1", "2.5", "nan", "1,1.25,1.5,2", "1,,2"):
         with pytest.raises(ValueError):
             parse_still_scales(bad)
+
+
+def _wait_still_idle(sess, timeout=5.0):
+    deadline = time.monotonic() + timeout
+    worker = sess._still_worker
+    while time.monotonic() < deadline:
+        with worker._cv:
+            if not worker._busy:
+                return
+        time.sleep(0.005)
+    raise AssertionError("still worker did not finish")
+
+
+def test_async_still_does_not_block_light_reply_and_resends_for_last_seq():
+    now = [100.0]
+    server = _FakeServer([_textured_frame(seq=i) for i in range(1, 4)])
+    fast = _FakeNude([Detection("FEMALE_BREAST_EXPOSED", 0.9, (1, 1, 5, 5))])
+    still = _FakeStill([Detection("FEMALE_BREAST_EXPOSED", 0.9, (10, 10, 20, 20))])
+    sess = _session(
+        server,
+        fast,
+        still_detector=still,
+        still_after_s=0.5,
+        still_async=True,
+        print_fn=lambda *a, **k: None,
+        time_fn=lambda: now[0],
+    )
+    try:
+        assert sess.step(0.01) is True
+        now[0] = 100.2
+        assert sess.step(0.01) is True
+        now[0] = 100.8
+        assert sess.step(0.01) is True
+        # The light reply for seq 3 goes out without the still boxes.
+        assert server.sends[-1][3] == 3
+        assert server.sends[-1][4] == [(1, 1, 5, 5)]
+        _wait_still_idle(sess)
+        assert still.calls == 1
+        assert sess.flush_still_results() is True
+        assert server.sends[-1][3] == 3
+        assert sorted(server.sends[-1][4]) == [(1, 1, 5, 5), (10, 10, 20, 20)]
+        # A result is sent once.
+        assert sess.flush_still_results() is False
+    finally:
+        sess.close()
+
+
+def test_async_still_result_dropped_when_screen_moved():
+    now = [100.0]
+    frames = [_textured_frame(seq=i) for i in range(1, 4)]
+    frames.append(_textured_frame(seq=4, shift_px=8))
+    server = _FakeServer(frames)
+    still = _FakeStill([Detection("FEMALE_BREAST_EXPOSED", 0.9, (10, 10, 20, 20))])
+    sess = _session(
+        server,
+        _FakeNude([]),
+        still_detector=still,
+        still_after_s=0.5,
+        still_async=True,
+        print_fn=lambda *a, **k: None,
+        time_fn=lambda: now[0],
+    )
+    try:
+        for t in (100.0, 100.2, 100.8):
+            now[0] = t
+            assert sess.step(0.01) is True
+        _wait_still_idle(sess)
+        # Hold the result back until the moved frame 4 has been replied to:
+        # the boxes found on frame 3 must not be applied to moved content.
+        result = sess._still_worker.take()
+        assert result is not None
+        now[0] = 101.0
+        assert sess.step(0.01) is True
+        assert server.sends[-1][3] == 4
+        sess._still_worker._result = result
+        assert sess.flush_still_results() is False
+    finally:
+        sess.close()
+
+
+def test_async_still_close_stops_worker():
+    sess = _session(
+        _FakeServer([]),
+        _FakeNude([]),
+        still_detector=_FakeStill(),
+        still_async=True,
+        print_fn=lambda *a, **k: None,
+    )
+    thread = sess._still_worker._thread
+    sess.close()
+    assert not thread.is_alive()
+
+
+def test_step_strong_confidence_splits_keep_boxes():
+    meta, pixels, receipt = _raw_frame()
+    server = _FakeServer([(meta, pixels, receipt)])
+    det = _FakeNude(
+        [
+            Detection("FEMALE_BREAST_EXPOSED", 0.9, (10, 10, 20, 20)),
+            Detection("FEMALE_BREAST_EXPOSED", 0.15, (60, 60, 10, 10)),
+        ]
+    )
+    sess = _session(server, det, print_fn=lambda *a, **k: None, strong_confidence=0.25)
+    assert sess.step(0.01) is True
+    assert server.sends[0][4] == [(10, 10, 20, 20)]
+    assert server.keeps[0] == [(60, 60, 10, 10)]
+
+
+def test_step_without_strong_confidence_sends_all_as_boxes():
+    meta, pixels, receipt = _raw_frame()
+    server = _FakeServer([(meta, pixels, receipt)])
+    det = _FakeNude([Detection("FEMALE_BREAST_EXPOSED", 0.15, (60, 60, 10, 10))])
+    sess = _session(server, det, print_fn=lambda *a, **k: None)
+    assert sess.step(0.01) is True
+    assert server.sends[0][4] == [(60, 60, 10, 10)]
+    assert server.keeps[0] == []

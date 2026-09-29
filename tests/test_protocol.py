@@ -456,6 +456,22 @@ def test_censor_seq_round_trip():
     assert parse_censor_seq_payload(payload) == (5, 1728, 1117, 123, boxes)
 
 
+def test_censor_seq_keep_boxes_round_trip():
+    from bsafe.protocol import parse_censor_seq_keep
+
+    boxes = [(1, 2, 30, 40)]
+    keep = [(5, 6, 7, 8), (9, 10, 11, 12)]
+    raw = pack_cmd_censor_seq(5, 1728, 1117, 123, boxes, keep)
+    _, payload = read_message(_make_recv(raw))
+    assert parse_censor_seq_payload(payload) == (5, 1728, 1117, 123, boxes)
+    assert parse_censor_seq_keep(payload) == keep
+    plain = pack_cmd_censor_seq(5, 1728, 1117, 123, boxes)
+    _, payload = read_message(_make_recv(plain))
+    assert parse_censor_seq_keep(payload) == []
+    # Empty keep list keeps the legacy payload byte-for-byte.
+    assert pack_cmd_censor_seq(5, 1728, 1117, 123, boxes, []) == plain
+
+
 def test_censor_seq_zero_boxes():
     raw = pack_cmd_censor_seq(5, 1728, 1117, 124, [])
     _, payload = read_message(_make_recv(raw))

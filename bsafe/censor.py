@@ -209,3 +209,29 @@ def build_censor_boxes(
     filtered = filter_detections(detections, classes)
     padded = [pad_box(d.box, padding, display_w, display_h, min_padding) for d in filtered]
     return merge_overlapping_boxes(padded)
+
+
+def build_censor_box_sets(
+    detections: list[Detection],
+    classes: frozenset[str],
+    padding: float,
+    display_w: int,
+    display_h: int,
+    min_padding: int = 0,
+    strong_confidence: float | None = None,
+) -> tuple[list[tuple[int, int, int, int]], list[tuple[int, int, int, int]]]:
+    """Split detections into censor boxes and keep-only boxes.
+
+    With ``strong_confidence`` None every detection is a censor box (same as
+    ``build_censor_boxes``). Otherwise detections below it become keep-only
+    boxes: padded and merged among themselves, never with censor boxes. Swift
+    uses them only to keep existing tracks alive.
+    """
+    if strong_confidence is None:
+        boxes = build_censor_boxes(detections, classes, padding, display_w, display_h, min_padding)
+        return boxes, []
+    strong = [d for d in detections if d.confidence >= strong_confidence]
+    weak = [d for d in detections if d.confidence < strong_confidence]
+    boxes = build_censor_boxes(strong, classes, padding, display_w, display_h, min_padding)
+    keep = build_censor_boxes(weak, classes, padding, display_w, display_h, min_padding)
+    return boxes, keep

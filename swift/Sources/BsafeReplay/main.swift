@@ -116,6 +116,8 @@ struct BoxFrame {
     var pts: Double
     var detectS: Double
     var boxes: [TrackBox]
+    /// Keep-only boxes (optional "keep" field): refresh existing tracks, never start one.
+    var keep: [TrackBox] = []
 }
 
 func numToDouble(_ v: Any?) -> Double? {
@@ -181,21 +183,30 @@ for (idx, line) in rawLines.dropFirst().enumerated() {
     guard let boxArr = obj["boxes"] as? [Any] else {
         ioError("invalid boxes field on line \(idx + 2)")
     }
-    var tbs: [TrackBox] = []
-    tbs.reserveCapacity(boxArr.count)
-    for b in boxArr {
-        guard let nums = b as? [Any], nums.count == 4,
-            let x = numToDouble(nums[0]), let y = numToDouble(nums[1]),
-            let w = numToDouble(nums[2]), let h = numToDouble(nums[3])
-        else {
-            ioError("invalid box on line \(idx + 2)")
+    func parseBoxes(_ arr: [Any]) -> [TrackBox] {
+        var tbs: [TrackBox] = []
+        tbs.reserveCapacity(arr.count)
+        for b in arr {
+            guard let nums = b as? [Any], nums.count == 4,
+                let x = numToDouble(nums[0]), let y = numToDouble(nums[1]),
+                let w = numToDouble(nums[2]), let h = numToDouble(nums[3])
+            else {
+                ioError("invalid box on line \(idx + 2)")
+            }
+            tbs.append(TrackBox(x: x, y: y, w: w, h: h))
         }
-        tbs.append(TrackBox(x: x, y: y, w: w, h: h))
+        return tbs
+    }
+    let tbs = parseBoxes(boxArr)
+    var keep: [TrackBox] = []
+    if let keepArr = obj["keep"] {
+        guard let arr = keepArr as? [Any] else { ioError("invalid keep field on line \(idx + 2)") }
+        keep = parseBoxes(arr)
     }
     if fi != frames.count {
         ioError("boxes frame index out of order on line \(idx + 2): got \(fi), expected \(frames.count)")
     }
-    frames.append(BoxFrame(pts: pts, detectS: ds, boxes: tbs))
+    frames.append(BoxFrame(pts: pts, detectS: ds, boxes: tbs, keep: keep))
 }
 
 let nBoxLines = frames.count
@@ -323,7 +334,8 @@ while let sample = trackOutput.copyNextSampleBuffer() {
                 ignored += 1
                 continue
             }
-            let ok = tracker.applyDetections(seq: UInt32(detIdx), boxes: frames[detIdx].boxes)
+            let ok = tracker.applyDetections(
+                seq: UInt32(detIdx), boxes: frames[detIdx].boxes, keepBoxes: frames[detIdx].keep)
             if ok {
                 applied += 1
                 lastOk = detIdx

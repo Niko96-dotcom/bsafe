@@ -41,6 +41,7 @@ Run format before committing. The pre-commit hook (`.githooks/pre-commit`, enabl
 - `cv2.phaseCorrelate` mutates its inputs for some sizes; pass copies of frames you keep.
 - Live capture is in points (1728x1117 on a 3456x2234 panel), not device pixels; padding and `--min-padding` are in capture pixels. Bench recordings must be scaled to the live capture size (even height) or detection won't match live.
 - `kill -USR1 <BsafeCapture pid>` simulates a capture interruption; persistent failure exits with code 3.
+- `swift build -c release` replaces the `BsafeCapture` binary the live app is running, which kills it; the menu bar app relaunches it on the new binary. Build only `--product bsafe-replay` while live must stay up.
 
 ## When changing things
 
