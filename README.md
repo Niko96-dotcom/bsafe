@@ -24,6 +24,12 @@ to your `~/.zshrc` to make `bsafe` globally available.
 You must grant **Screen Recording** permission to your terminal app
 (System Settings → Privacy & Security → Screen Recording).
 
+To run format, lint and tests before each commit, enable the repo's hook:
+
+```sh
+git config core.hooksPath .githooks
+```
+
 ## Usage
 
 Check that everything is in order:
@@ -207,11 +213,17 @@ difference per 0.1 s of detection time, independent of the detection rate. A det
 narrower (common while an image scrolls into view) therefore cannot uncover
 part of the region. `--smooth-alpha` does not apply to live mode.
 
-Suggested setup for a 120 Hz Mac:
+Suggested setup for a 120 Hz Mac (the menu bar's Standard preset, at 120 fps):
 
 ```sh
-bsafe start --fps 120 --detect-scale 1.5 --padding 0.4 --persist-frames 4
+bsafe start --fps 120 --padding 0.4 --min-padding 24
 ```
+
+For the Strict preset, add `--extra-scales 0.5,0.25`, and add
+`--still-model 640m` once the 640m model is installed. Detecting at
+`--detect-scale 1.5` alone leaks more than Standard, because it drops the
+native-size pass that catches mid-size close-ups; see
+[docs/tuning-log.md](docs/tuning-log.md).
 
 Limitation: an overlay reacts after content is drawn, so the first frames of
 newly appearing content can still be visible (typically a few tens of
