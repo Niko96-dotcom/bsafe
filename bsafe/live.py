@@ -8,6 +8,7 @@ Frames stay in memory only; never written to disk, never logged.
 """
 
 import logging
+import math
 import queue
 import time
 
@@ -55,6 +56,41 @@ def parse_extra_scales(raw) -> tuple[float, ...] | None:
         return tuple(float(p) for p in parts)
     except ValueError as e:
         raise ValueError(f"invalid --extra-scales {raw!r}: expected comma-separated floats") from e
+
+
+STILL_SCALE_MIN = 0.25
+STILL_SCALE_MAX = 2.0
+
+
+def parse_still_scales(raw) -> tuple[float, ...]:
+    """Parse a --still-scales value: 1-3 distinct frame-relative factors in [0.25, 2.0].
+
+    ``None`` means the default ``(1.0,)``. Accepts a comma-separated string, a
+    single number, or a list/tuple. Raises ValueError on invalid input.
+    """
+    if raw is None:
+        return (1.0,)
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+        parts = [raw]
+    elif isinstance(raw, (list, tuple)):
+        parts = list(raw)
+    else:
+        parts = [p.strip() for p in str(raw).split(",")]
+    try:
+        scales = tuple(float(p) for p in parts)
+    except (TypeError, ValueError) as e:
+        raise ValueError(f"invalid --still-scales {raw!r}: expected comma-separated floats") from e
+    if not 1 <= len(scales) <= 3:
+        raise ValueError(f"invalid --still-scales {raw!r}: expected 1 to 3 values")
+    if len(set(scales)) != len(scales):
+        raise ValueError(f"invalid --still-scales {raw!r}: duplicate values")
+    for f in scales:
+        if not (math.isfinite(f) and STILL_SCALE_MIN <= f <= STILL_SCALE_MAX):
+            raise ValueError(
+                f"invalid --still-scales {raw!r}: each value must be in "
+                f"[{STILL_SCALE_MIN}, {STILL_SCALE_MAX}]"
+            )
+    return scales
 
 
 def validate_extra_scales(
@@ -259,6 +295,7 @@ class LiveSession:
         still_detector=None,
         still_period_s: float = 2.0,
         still_after_s: float = 0.5,
+        still_scales: tuple[float, ...] = (1.0,),
     ):
         self._server = server
         self._detector = detector
@@ -275,6 +312,8 @@ class LiveSession:
         self._still_detector = still_detector
         self._still_period_s = still_period_s
         self._still_after_s = still_after_s
+        self._still_scales = tuple(still_scales) or (1.0,)
+        self._still_runs: dict = {}
         self._still_tracker = StillnessTracker() if still_detector is not None else None
         self._last_still_run: dict = {}
 
@@ -300,7 +339,10 @@ class LiveSession:
 
                 prepare_multiscale(self._detector, cw, ch, self._extra_factors)
                 if self._still_detector is not None and hasattr(self._still_detector, "prepare"):
-                    self._still_detector.prepare(cw, ch)
+                    from bsafe.fastdetect import extra_size
+
+                    for f in self._still_scales:
+                        self._still_detector.prepare(*extra_size(cw, ch, f))
                 elapsed_ms = (self._time_fn() - t0) * 1000.0
                 provider = getattr(self._detector, "provider", "cpu")
                 self._emit(
@@ -362,7 +404,15 @@ class LiveSession:
                         last_run = self._last_still_run.get(meta.display_id)
                         if last_run is None or now - last_run >= self._still_period_s:
                             attempted_still = True
-                            still_dets = self._still_detector.detect_bgra(frame)
+                            from bsafe.fastdetect import detect_at_scale
+
+                            run = self._still_runs.get(meta.display_id, 0)
+                            self._still_runs[meta.display_id] = run + 1
+                            still_dets = detect_at_scale(
+                                self._still_detector,
+                                frame,
+                                self._still_scales[run % len(self._still_scales)],
+                            )
                             if still_dets:
                                 detections = list(detections) + list(still_dets)
                             self._last_still_run[meta.display_id] = now

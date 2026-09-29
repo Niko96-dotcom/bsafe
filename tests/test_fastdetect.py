@@ -477,3 +477,24 @@ def test_detect_multiscale_primary_failure_propagates():
 
     with pytest.raises(RuntimeError, match="primary boom"):
         detect_multiscale(_FailPrimary(), np.zeros((32, 32, 4), dtype=np.uint8), (0.5,))
+
+
+def test_detect_at_scale_upscale_maps_boxes_back():
+    from bsafe.fastdetect import detect_at_scale
+
+    frame = np.zeros((100, 200, 4), dtype=np.uint8)
+    up = [Detection("FEET_EXPOSED", 0.8, (30, 30, 60, 60))]
+    det = _FakeMultiDetector([up])
+    out = detect_at_scale(det, frame, 1.5)
+    assert det.shapes == [(150, 300, 4)]
+    assert out[0].box == (20, 20, 40, 40)
+
+
+def test_detect_at_scale_one_passes_frame_through():
+    from bsafe.fastdetect import detect_at_scale
+
+    frame = np.zeros((100, 200, 4), dtype=np.uint8)
+    det = _FakeMultiDetector([[Detection("FEET_EXPOSED", 0.8, (1, 2, 3, 4))]])
+    out = detect_at_scale(det, frame, 1.0)
+    assert det.shapes == [(100, 200, 4)]
+    assert out[0].box == (1, 2, 3, 4)

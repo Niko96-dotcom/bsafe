@@ -704,3 +704,34 @@ def test_still_model_config_true_rejected(capsys):
     with pytest.raises(SystemExit):
         _validate_live_args(args)
     assert "invalid still_model" in capsys.readouterr().err
+
+
+def test_still_scales_default_and_period_scaling():
+    args = _args([])
+    _validate_live_args(args)
+    assert args.still_scales == (1.0,)
+    assert args.still_period == 2.0
+    args = _args(["--still-scales", "1.0,1.5"])
+    _validate_live_args(args)
+    assert args.still_scales == (1.0, 1.5)
+    assert args.still_period == 1.0
+    args = _args(["--still-scales", "1.0,1.5", "--still-period", "3"])
+    _validate_live_args(args)
+    assert args.still_period == 3.0
+
+
+def test_still_scales_invalid_rejected(capsys):
+    for value in ("1.0,1.0", "3", "x", "0.1"):
+        with pytest.raises(SystemExit):
+            _validate_live_args(_args(["--still-scales", value]))
+    assert "--still-scales" in capsys.readouterr().err
+
+
+def test_config_line_shows_still_scales(capsys):
+    args = _args(["--still-model", "640m", "--still-scales", "1.0,1.5"])
+    _validate_live_args(args)
+    args.confidence = 0.0
+    _print_config(args)
+    out = capsys.readouterr().out
+    assert "still_scales=1.0,1.5" in out
+    assert "still_period=1.0" in out

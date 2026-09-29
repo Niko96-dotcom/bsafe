@@ -429,12 +429,14 @@ class _FakeStill:
         self._raise = raise_
         self.calls = 0
         self.prepare_calls: list = []
+        self.shapes: list = []
 
     def prepare(self, w, h):
         self.prepare_calls.append((w, h))
 
     def detect_bgra(self, frame):
         self.calls += 1
+        self.shapes.append(frame.shape[:2])
         if self._raise:
             raise RuntimeError("still boom")
         return list(self._detections)
@@ -671,3 +673,59 @@ def test_handle_display_info_resets_stillness():
     now[0] = 11.0
     assert sess.step(0.01) is True
     assert still.calls == 0
+
+
+def test_step_still_cycles_scales_and_maps_boxes_back():
+    now = [100.0]
+    server = _FakeServer([_textured_frame(seq=i) for i in range(8)])
+    still = _FakeStill([Detection("FEMALE_BREAST_EXPOSED", 0.9, (10, 10, 20, 20))])
+    sess = _session(
+        server,
+        _FakeNude([]),
+        still_detector=still,
+        still_period_s=1.0,
+        still_after_s=0.5,
+        still_scales=(1.0, 1.5),
+        print_fn=lambda *a, **k: None,
+        time_fn=lambda: now[0],
+    )
+    sess.step(0.01)
+    now[0] = 100.2
+    sess.step(0.01)
+    now[0] = 100.8
+    sess.step(0.01)
+    assert still.shapes == [(48, 64)]
+    assert server.sends[-1][4] == [(10, 10, 20, 20)]
+    now[0] = 101.9
+    sess.step(0.01)
+    assert still.shapes == [(48, 64), (72, 96)]
+    assert server.sends[-1][4] == [(7, 7, 13, 13)]
+    now[0] = 103.0
+    sess.step(0.01)
+    assert still.shapes[-1] == (48, 64)
+
+
+def test_handle_display_info_prepares_every_still_scale():
+    still = _FakeStill()
+    sess = _session(
+        _FakeServer([]),
+        _FakeNude(),
+        still_detector=still,
+        still_scales=(1.0, 1.5),
+        print_fn=lambda *a, **k: None,
+        time_fn=time.monotonic,
+    )
+    sess.handle_display_info(_display(1, 200, 100, 200, 100))
+    assert still.prepare_calls == [(200, 100), (300, 150)]
+
+
+def test_parse_still_scales():
+    from bsafe.live import parse_still_scales
+
+    assert parse_still_scales(None) == (1.0,)
+    assert parse_still_scales("1.0,1.5") == (1.0, 1.5)
+    assert parse_still_scales(1.5) == (1.5,)
+    assert parse_still_scales([1, 0.5]) == (1.0, 0.5)
+    for bad in ("", "a", "1.0,1.0", "0.1", "2.5", "nan", "1,1.25,1.5,2", "1,,2"):
+        with pytest.raises(ValueError):
+            parse_still_scales(bad)

@@ -185,6 +185,7 @@ Shared flags (work with both `start` and `video`):
 - `--detect-scale N` — detection resolution as a multiple of the display's point size (default 1.0). 1.5 detects images down to ~100 pt wide at ~2x GPU cost
 - `--min-padding N` — minimum padding in capture pixels per side, added to small boxes (default: 0). Units are the capture size printed at startup (`Display 1: capturing 1728x1117 px`). Small detections carry most of the leaked area and proportional `--padding` barely grows them: on scrolling X feed recordings at live capture size, a 24 px floor cut leak by up to 20% for about +0.15% of screen over-censor
 - `--still-model {none,640m}` — on still screens (no scrolling for `--still-after` seconds, default 0.5), run the 640m model on the frame every `--still-period` seconds (default 2.0) and add its detections (default: `none`; needs the 640m download). The 320n model tends to lose objects on paused feeds and playing videos that 640m still sees, and the 3 s box persistence carries each 640m hit to the next one. Over five simulated 3-min X sessions it cut mean leak from 5.6% to 4.4% (Standard) and 5.0% to 3.9% (Strict) with no extra over-censoring, for one ~80 ms pass every 2 s while still plus ~1.4 ms per frame of motion estimation. NudeNet-only
+- `--still-scales LIST` — frame-relative scales the still pass cycles through, one per pass (up to 3 values in 0.25–2.0, default `1.0`; `--still-period` then defaults to 2.0 divided by the number of scales). `1.0,1.5` alternates native and 1.5x every second, so each scale still runs every 2 s and each 640m pass sees objects at a different size; 1.5x upscales the capture in Python, which was as good as a true 1.5x recording. On five simulated sessions it cut Strict mean leak from 3.9% (native 640m alone) to 3.2% (5.0% without a still pass), mostly armpits (6.6% to 3.5%) and feet (5.7% to 4.6%), with unchanged over-censor, for ~120 ms of 640m per still second (170 ms passes at most)
 - `--extra-scales LIST` — extra detection passes at these multiples of point size, e.g. `0.5` or `0.5,0.75` (each must be < `--detect-scale`; default `0.5` for NudeNet, `none` to disable). The 320n model was trained at 320 px input and misses large close-ups full-frame at native 1728 px: one extra 0.5x pass cut leak vs a 640m oracle from 18.9% to 10.3% (feet), 50.7% to 32.5% (armpits), 17.5% to 16.5% (butt) for ~+5 ms per frame. Strict mode: `bsafe start --extra-scales 0.5,0.25` adds a pass for very large close-ups (~1.3x Standard's cost). `--detect-scale 1.5 --extra-scales 1.0,0.5` helps tiny objects (feet, small thumbnails) but costs ~2x Strict for the same overall leak; keep a native-size 1.0 pass with 1.5x, or mid-size objects such as armpit close-ups are missed. NudeNet-only (warned and ignored with EraX)
 
 ### How live mode works
@@ -220,7 +221,7 @@ bsafe start --fps 120 --padding 0.4 --min-padding 24
 ```
 
 For the Strict preset, add `--extra-scales 0.5,0.25`, and add
-`--still-model 640m` once the 640m model is installed. Detecting at
+`--still-model 640m --still-scales 1.0,1.5` once the 640m model is installed. Detecting at
 `--detect-scale 1.5` alone leaks more than Standard, because it drops the
 native-size pass that catches mid-size close-ups; see
 [docs/tuning-log.md](docs/tuning-log.md).

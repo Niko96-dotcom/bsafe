@@ -28,6 +28,7 @@ def test_start_valid_keys():
             "extra_scales",
             "still_model",
             "still_period",
+            "still_scales",
             "still_after",
         }
         | VALID_KEYS["common"]
@@ -144,7 +145,7 @@ def test_still_keys_are_start_only():
     assert "still_model" in VALID_KEYS["start"]
     assert "still_period" in VALID_KEYS["start"]
     assert "still_after" in VALID_KEYS["start"]
-    for key in ("still_model", "still_period", "still_after"):
+    for key in ("still_model", "still_period", "still_scales", "still_after"):
         assert key not in VALID_KEYS["common"]
         assert key not in VALID_KEYS["video"]
         assert key not in VALID_KEYS["image"]

@@ -87,7 +87,8 @@ public func stillModelInstalled() -> Bool {
 
 /// Build the `bsafe start ...` argument list for the given settings.
 /// Always starts with ["start", "--stats"]; the feet flag is always explicit.
-/// With `stillModel`, Standard and Strict add a 640m pass on still screens.
+/// With `stillModel`, Standard and Strict add a 640m pass on still screens;
+/// Strict alternates it between native and 1.5x every second.
 public func arguments(for settings: BsafeSettings, stillModel: Bool = false) -> [String] {
     var args = ["start", "--stats"]
     args += ["--censor", settings.censor.rawValue]
@@ -105,6 +106,9 @@ public func arguments(for settings: BsafeSettings, stillModel: Bool = false) -> 
     }
     if stillModel && settings.quality != .fast {
         args += ["--still-model", "640m"]
+        if settings.quality == .strict {
+            args += ["--still-scales", "1.0,1.5"]
+        }
     }
     switch settings.style {
     case .pixelate:

@@ -299,6 +299,39 @@ def prepare_multiscale(detector, width: int, height: int, factors=None) -> None:
         detector.prepare(w_small, h_small)
 
 
+def detect_at_scale(detector, frame: np.ndarray, factor: float) -> list[Detection]:
+    """One detection pass on ``frame`` resized by ``factor`` (may be > 1), boxes in frame coordinates.
+
+    ``factor == 1`` runs the frame unchanged. Otherwise the frame is resized
+    with ``cv2.INTER_AREA`` (down) or ``cv2.INTER_LINEAR`` (up) and each box is
+    rescaled back with the exact ratios ``W/w_small`` and ``H/h_small``,
+    rounded to int, clamped to the frame bounds (w/h >= 1).
+    """
+    if factor == 1.0:
+        return list(detector.detect_bgra(frame))
+    h, w = int(frame.shape[0]), int(frame.shape[1])
+    w_small, h_small = extra_size(w, h, factor)
+    interp = cv2.INTER_AREA if factor < 1.0 else cv2.INTER_LINEAR
+    small = cv2.resize(frame, (w_small, h_small), interpolation=interp)
+    sx = w / w_small
+    sy = h / h_small
+    detections: list[Detection] = []
+    for d in detector.detect_bgra(small):
+        bx, by, bw, bh = d.box
+        x = int(round(bx * sx))
+        y = int(round(by * sy))
+        nw = int(round(bw * sx))
+        nh = int(round(bh * sy))
+        x = max(0, min(x, w - 1))
+        y = max(0, min(y, h - 1))
+        nw = max(1, min(nw, w - x))
+        nh = max(1, min(nh, h - y))
+        detections.append(
+            Detection(class_name=d.class_name, confidence=d.confidence, box=(x, y, nw, nh))
+        )
+    return detections
+
+
 def detect_multiscale(detector, frame: np.ndarray, factors) -> list[Detection]:
     """Run the primary full-frame pass plus extra downscaled passes.
 
@@ -321,26 +354,9 @@ def detect_multiscale(detector, frame: np.ndarray, factors) -> list[Detection]:
     detections: list[Detection] = list(detector.detect_bgra(frame))
     if not factors:
         return detections
-    h, w = int(frame.shape[0]), int(frame.shape[1])
     for f in factors:
         try:
-            w_small, h_small = extra_size(w, h, f)
-            small = cv2.resize(frame, (w_small, h_small), interpolation=cv2.INTER_AREA)
-            sx = w / w_small
-            sy = h / h_small
-            for d in detector.detect_bgra(small):
-                bx, by, bw, bh = d.box
-                x = int(round(bx * sx))
-                y = int(round(by * sy))
-                nw = int(round(bw * sx))
-                nh = int(round(bh * sy))
-                x = max(0, min(x, w - 1))
-                y = max(0, min(y, h - 1))
-                nw = max(1, min(nw, w - x))
-                nh = max(1, min(nh, h - y))
-                detections.append(
-                    Detection(class_name=d.class_name, confidence=d.confidence, box=(x, y, nw, nh))
-                )
+            detections.extend(detect_at_scale(detector, frame, f))
         except Exception as e:
             global _last_extra_warn_s
             now = time.monotonic()

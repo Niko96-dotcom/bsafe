@@ -24,6 +24,10 @@ The menu bar Strict preset is `--extra-scales 0.5,0.25` (detect-scale 1.0): vs a
 
 `--still-model 640m` (off by default; the menu bar enables it for Standard/Strict when the model file exists) runs a second `FullFrameNudeDetector` synchronously on the same frame once `StillnessTracker` (`bsafe/live.py`: gray, 1/4 INTER_AREA, `cv2.phaseCorrelate`, still < 0.5 full-res px, same as bench `motion.jsonl`) has seen the display still for `--still-after` (0.5 s), at most every `--still-period` (2.0 s); detections are appended before `build_censor_boxes`. Chosen with `~/bsafe-bench/heavy.py` (injects 640m dets + 80 ms into replay dets): leak 5.0 -> 3.9% Strict, 5.6 -> 4.4% Standard, over-censor unchanged; periods 0.5-3 s were equal, 4 s worse.
 
+### Still pass scales (`--still-scales`)
+
+The menu bar's Strict preset runs the still pass as `--still-scales 1.0,1.5` (period 1 s, so each scale every 2 s). Simulated with `~/bsafe-bench/heavy.py` / `heavy_alt.py` on the Strict base (`sim-cq47`, ps3, 640m 73 ms at 1x, 170 ms at 1.5x), mean leak/over-censor over five sessions vs a 640m@1x + 640m@1.5x union GT: no still pass 5.0/4.1, 1x every 2 s 3.9/4.1, 1.5x every 2 s 3.7/4.2, 1x and 1.5x together every 2 s 3.4/4.2, alternating every 1 s **3.2/4.2** (same ~120 ms per still second as together, no 240 ms stall). 1.5x alone loses tits (1.5 -> 3.9%) because large objects are found at 1x; feet 5.7 -> 4.6%, armpits 6.6 -> 3.5%. Live captures 1728 px (points), so 1.5x is an in-Python `cv2.INTER_LINEAR` upscale; 640m on upscaled live frames scored the same as on true 1.5x recordings (3.2/4.2, both GTs). Standard keeps the single native pass (alternation not simulated there).
+
 ## Motion estimation region
 
 Each track also keeps `core` (the latest matched detection, unblended); motion is

@@ -218,7 +218,7 @@ def _resolve_extra_scales_for_start(args, detect_scale: float) -> tuple[float, .
 
 def _validate_live_args(args):
     """Validate start-only live flags. Exits on error before the helper starts."""
-    from bsafe.live import validate_live_options
+    from bsafe.live import parse_still_scales, validate_live_options
 
     scale = getattr(args, "detect_scale", 1.0)
     if scale is None:
@@ -237,9 +237,14 @@ def _validate_live_args(args):
             file=sys.stderr,
         )
         sys.exit(1)
+    try:
+        args.still_scales = parse_still_scales(getattr(args, "still_scales", None))
+    except ValueError as e:
+        print(f"{error('Error:')} {e}", file=sys.stderr)
+        sys.exit(1)
     period = getattr(args, "still_period", None)
     if period is None:
-        period = 2.0
+        period = 2.0 / len(args.still_scales)
         args.still_period = period
     if not (math.isfinite(period) and period > 0):
         print(f"{error('Error:')} --still-period must be a finite number > 0", file=sys.stderr)
@@ -314,7 +319,11 @@ def _print_config(args):
         if still_disp != "none":
             period = getattr(args, "still_period", None)
             after = getattr(args, "still_after", None)
-            parts.append(f"still_period={2.0 if period is None else period}")
+            from bsafe.live import parse_still_scales
+
+            scales = parse_still_scales(getattr(args, "still_scales", None))
+            parts.append(f"still_scales={','.join(str(f) for f in scales)}")
+            parts.append(f"still_period={2.0 / len(scales) if period is None else period}")
             parts.append(f"still_after={0.5 if after is None else after}")
     if getattr(args, "stats", False):
         parts.append("stats=true")
@@ -339,7 +348,7 @@ def cmd_start(args):
     from bsafe.censor import resolve_censor_classes
     from bsafe.detector import Detector, get_model_backend, resolve_model
     from bsafe.ipc import FrameServer
-    from bsafe.live import LiveSession, LiveStats
+    from bsafe.live import LiveSession, LiveStats, parse_still_scales
     from bsafe.swift_helper import StderrTail, spawn_helper
 
     fps = args.fps
@@ -446,9 +455,10 @@ def cmd_start(args):
 
     print(bold("Running...") + " press Ctrl+C to stop.", flush=True)
 
+    still_scales = parse_still_scales(getattr(args, "still_scales", None))
     still_period = getattr(args, "still_period", None)
     if still_period is None:
-        still_period = 2.0
+        still_period = 2.0 / len(still_scales)
     still_after = getattr(args, "still_after", None)
     if still_after is None:
         still_after = 0.5
@@ -466,6 +476,7 @@ def cmd_start(args):
         still_detector=still_detector,
         still_period_s=float(still_period),
         still_after_s=float(still_after),
+        still_scales=still_scales,
     )
     # Watchdog: if our parent dies we are reparented to init (ppid 1).
     # Record the parent at start; only act when we started with a real
@@ -1084,7 +1095,14 @@ def _build_parser():
         "--still-period",
         type=float,
         default=None,
-        help="Seconds between still-screen 640m passes once still (default: 2.0)",
+        help="Seconds between still-screen 640m passes once still (default: 2.0 divided by the number of --still-scales)",
+    )
+    start_parser.add_argument(
+        "--still-scales",
+        type=str,
+        default=None,
+        help="Frame-relative scales the still-screen 640m pass cycles through, one per pass "
+        "(comma list of up to 3 values in 0.25-2.0, default 1.0). '1.0,1.5' alternates native and 1.5x",
     )
     start_parser.add_argument(
         "--still-after",

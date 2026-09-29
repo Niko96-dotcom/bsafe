@@ -36,6 +36,7 @@ VALID_KEYS = {
         "extra_scales",
         "still_model",
         "still_period",
+        "still_scales",
         "still_after",
     }
     | _COMMON_KEYS,
@@ -83,7 +84,8 @@ dry_run = false
 # detect_scale = 1.0  # detection resolution multiple: 1.0, 1.25, 1.5, 2.0 (NudeNet only; 1.5 catches ~100 pt images)
 # extra_scales = "0.5"   # comma list of extra detection scales; "none" disables
 # still_model = "none"  # "640m" adds a 640m pass every still_period s once the screen is still for still_after s
-# still_period = 2.0
+# still_scales = "1.0"  # up to 3 frame-relative scales the still pass cycles through, e.g. "1.0,1.5"
+# still_period = 2.0    # seconds between still passes; default 2.0 / number of still_scales
 # still_after = 0.5
 
 [video]
