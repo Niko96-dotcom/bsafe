@@ -1103,8 +1103,8 @@ def _build_parser():
     bench_replay_parser.add_argument(
         "--min-persist-s",
         type=float,
-        default=1.0,
-        help="Minimum persistence time in seconds (default: 1.0)",
+        default=3.0,
+        help="Minimum persistence time in seconds (default: 3.0)",
     )
     bench_replay_parser.add_argument(
         "--shrink-alpha",
@@ -1141,6 +1141,12 @@ def _build_parser():
         default=0.25,
         help="Min confidence for all GT sources (default: 0.25)",
     )
+    bench_replay_parser.add_argument(
+        "--covered",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Also censor *_COVERED classes (default: False)",
+    )
 
     bench_sweep_parser = bench_subparsers.add_parser(
         "sweep", help="Run a grid of padding/tracker configs and print a table"
@@ -1169,6 +1175,12 @@ def _build_parser():
         type=float,
         default=0.25,
         help="Min confidence for all GT sources (default: 0.25)",
+    )
+    bench_sweep_parser.add_argument(
+        "--covered",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Also censor *_COVERED classes (default: False)",
     )
 
     subparsers.add_parser("displays", help="List connected displays")

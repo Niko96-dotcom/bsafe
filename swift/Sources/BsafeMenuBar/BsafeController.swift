@@ -192,11 +192,20 @@ final class BsafeController: ObservableObject {
         refreshLoginStatus()
     }
 
+    var censorCaption: String {
+        switch settings.censor {
+        case .body: "Nudity plus belly, armpits, butt, feet."
+        case .all: "Genitals and nipples only."
+        case .female: "Female genitals and nipples only."
+        case .male: "Male genitals only."
+        }
+    }
+
     var qualityCaption: String {
         switch settings.quality {
         case .fast: "Lower CPU, may miss small regions."
         case .standard: "Balanced for everyday use."
-        case .strict: "Higher CPU, catches smaller regions."
+        case .strict: "More GPU, catches more close-ups."
         }
     }
 

@@ -127,7 +127,7 @@ final class PersistTimeTests: XCTestCase {
     }
 
     func testMinPersistSanitization() {
-        XCTAssertEqual(TrackerConfig(minPersistSeconds: .nan).minPersistSeconds, 1.0, accuracy: 1e-9)
+        XCTAssertEqual(TrackerConfig(minPersistSeconds: .nan).minPersistSeconds, 3.0, accuracy: 1e-9)
         XCTAssertEqual(TrackerConfig(minPersistSeconds: -1).minPersistSeconds, 0, accuracy: 1e-9)
     }
 

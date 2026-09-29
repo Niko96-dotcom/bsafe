@@ -651,7 +651,7 @@ def test_run_replay_passes_contract_flags(tmp_path):
         "--shrink-alpha",
         "0.1",
         "--min-persist-s",
-        "1",
+        "3",
         "--max-lead-s",
         "0.1",
     ]
@@ -708,8 +708,8 @@ def test_sweep_runs_grid_and_writes_sweep_json(tmp_path, monkeypatch, capsys):
     assert on_disk["video"] == "/tmp/rec.mov"
     assert len(on_disk["results"]) == 12
     names = [entry["name"] for entry in on_disk["results"]]
-    assert "pad0-pp8-mp0.6-sa0.25" in names
-    assert "pad0.4-pp8-mp1-sa0.1" in names
+    assert "pad0-pp8-mp1-sa0.25" in names
+    assert "pad0.4-pp8-mp3-sa0.1" in names
 
     for entry in on_disk["results"]:
         run_dir = tmp_path / entry["name"]
@@ -722,7 +722,7 @@ def test_sweep_runs_grid_and_writes_sweep_json(tmp_path, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "leak_frac" in out
     assert "over_censor%" in out
-    assert "pad0.4-pp8-mp0.6-sa0.25" in out
+    assert "pad0.4-pp8-mp1-sa0.25" in out
 
 
 def test_sweep_requires_dets(tmp_path):
@@ -762,7 +762,7 @@ def test_parser_bench_replay_defaults():
     assert args.padding == 0.4
     assert args.min_padding == 0
     assert args.persist_passes == 8
-    assert args.min_persist_s == 1.0
+    assert args.min_persist_s == 3.0
     assert args.shrink_alpha == 0.1
     assert args.present_lead_ms == 16.0
     assert args.overhead_ms == 6.0
@@ -837,7 +837,7 @@ def test_cmd_replay_writes_score(tmp_path, monkeypatch, capsys):
 
     bench.cmd_replay(_args(["replay", str(tmp_path), "--padding", "0.25"]))
 
-    run_dir = tmp_path / "pad0.25-pp8-mp1-sa0.1"
+    run_dir = tmp_path / "pad0.25-pp8-mp3-sa0.1"
     assert (run_dir / "boxes.jsonl").is_file()
     assert (run_dir / "displayed.jsonl").is_file()
     payload = json.loads((run_dir / "score.json").read_text(encoding="utf-8"))
@@ -864,7 +864,7 @@ def test_cmd_replay_records_min_padding(tmp_path, monkeypatch):
     _write_dets(tmp_path / "dets.jsonl", [[(FEET, 0.9, (10, 10, 40, 40))] for _ in range(2)])
     monkeypatch.setattr(bench, "run_replay", _fake_replay)
     bench.cmd_replay(_args(["replay", str(tmp_path), "--min-padding", "48"]))
-    run_dir = tmp_path / "pad0.4-pp8-mp1-sa0.1-mpx48"
+    run_dir = tmp_path / "pad0.4-pp8-mp3-sa0.1-mpx48"
     assert (run_dir / "boxes.jsonl").is_file()
     payload = json.loads((run_dir / "score.json").read_text(encoding="utf-8"))
     assert payload["config"]["min_padding"] == 48
@@ -1023,7 +1023,7 @@ def test_cmd_replay_records_gt_sources(tmp_path, monkeypatch, capsys):
     gt = _write_dets(tmp_path / "gt.jsonl", [[(FEET, 0.9, (10, 10, 40, 40))] for _ in range(2)])
     monkeypatch.setattr(bench, "run_replay", _fake_replay)
     bench.cmd_replay(_args(["replay", str(tmp_path), "--gt-dets", str(gt)]))
-    run_dir = tmp_path / "pad0.4-pp8-mp1-sa0.1"
+    run_dir = tmp_path / "pad0.4-pp8-mp3-sa0.1"
     payload = json.loads((run_dir / "score.json").read_text(encoding="utf-8"))
     assert payload["config"]["gt_sources"] == [str(gt.resolve())]
     assert payload["config"]["gt_conf"] == pytest.approx(0.25)
@@ -1203,3 +1203,264 @@ def test_detect_warms_extra_shapes_before_loop(tmp_path, monkeypatch):
     bench_mod.detect(tmp_path / "rec.mov", tmp_path / "out", extra_scales="0.5")
     assert (64, 64) in prepare_calls
     assert extra_size(64, 64, 0.5) in prepare_calls
+
+
+# --- Motion labels (still vs moving) ------------------------------------------
+
+
+def _write_video(path, frames, fps=30):
+    import cv2
+
+    height, width = frames[0].shape[:2]
+    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height))
+    assert writer.isOpened()
+    try:
+        for frame in frames:
+            writer.write(frame)
+    finally:
+        writer.release()
+    return Path(path)
+
+
+def test_compute_motion_detects_vertical_scroll(tmp_path):
+    import numpy as np
+
+    width, height, step, n = 160, 120, 8, 5
+    rng = np.random.default_rng(0)
+    tall = rng.integers(0, 256, size=(height + step * n, width, 3), dtype=np.uint8)
+    frames = [tall[i * step : i * step + height] for i in range(n)]
+    video = _write_video(tmp_path / "scroll.mp4", frames)
+
+    out = tmp_path / "motion.jsonl"
+    bench.compute_motion(video, out, downscale=2)
+    lines = out.read_text(encoding="utf-8").splitlines()
+    header = json.loads(lines[0])
+    assert header["type"] == "motion"
+    assert header["downscale"] == 2
+    assert header["frames"] == n
+    for line in lines[1:]:
+        obj = json.loads(line)
+        assert set(("frame", "dx", "dy", "response")) <= set(obj)
+    first = json.loads(lines[1])
+    assert first["frame"] == 0
+    assert first["dx"] == 0.0 and first["dy"] == 0.0
+    for line in lines[2:]:
+        obj = json.loads(line)
+        assert abs(abs(obj["dy"]) - 8) <= 1.5
+
+    mags = bench.load_motion(out)
+    assert len(mags) == n
+    for i in range(1, n):
+        assert abs(mags[i] - 8) <= 1.5
+
+    # A static video stays below the STILL_PX threshold.
+    static_rng = np.random.default_rng(1)
+    static_frame = static_rng.integers(0, 256, size=(height, width, 3), dtype=np.uint8)
+    static_video = _write_video(tmp_path / "still.mp4", [static_frame] * 4)
+    static_out = tmp_path / "motion-static.jsonl"
+    bench.compute_motion(static_video, static_out, downscale=2)
+    static_mags = bench.load_motion(static_out)
+    assert len(static_mags) == 4
+    assert all(m < 0.5 for m in static_mags.values())
+
+
+def test_compute_motion_static_video_is_still(tmp_path):
+    import numpy as np
+
+    rng = np.random.default_rng(1)
+    frame = rng.integers(0, 256, size=(120, 160, 3), dtype=np.uint8)
+    video = _write_video(tmp_path / "still.mp4", [frame] * 4)
+
+    out = tmp_path / "motion.jsonl"
+    bench.compute_motion(video, out, downscale=2)
+    mags = bench.load_motion(out)
+    assert len(mags) == 4
+    assert all(m < 0.5 for m in mags.values())
+
+
+def test_score_by_phase_splits_leak(tmp_path):
+    box = (10, 10, 40, 40)
+    dets = _write_dets(tmp_path / "dets.jsonl", [[(FEET, 0.9, box)] for _ in range(10)])
+    disp = _write_displayed(
+        tmp_path / "displayed.jsonl",
+        [[box]] * 5 + [[]] * 5,
+        lead=0.0,
+    )
+    motion = {i: (5.0 if i < 5 else 0.0) for i in range(10)}
+
+    result = bench.score(dets, disp, BOTH, motion=motion)
+    assert result["by_phase"]["moving"]["leak_frac"] == pytest.approx(0.0)
+    assert result["by_phase"]["still"]["leak_frac"] == pytest.approx(1.0)
+    assert result["by_phase"]["moving"]["n_gt_boxes"] == 5
+    assert result["by_phase"]["still"]["n_gt_boxes"] == 5
+    assert result["by_phase"]["moving"]["leak_frames_pct"] == pytest.approx(0.0)
+    assert result["by_phase"]["still"]["leak_frames_pct"] == pytest.approx(100.0)
+
+    plain = bench.score(dets, disp, BOTH)
+    assert result["overall"] == plain["overall"]
+    assert result["per_class"] == plain["per_class"]
+
+
+def test_score_without_motion_has_no_by_phase(tmp_path):
+    dets = _write_dets(tmp_path / "dets.jsonl", [[(FEET, 0.9, (10, 10, 40, 40))]])
+    disp = _write_displayed(tmp_path / "displayed.jsonl", [[(10, 10, 40, 40)]])
+    result = bench.score(dets, disp, BOTH)
+    assert "by_phase" not in result
+
+
+def test_replay_covered_classes(tmp_path, monkeypatch, capsys):
+    classes = bench.censor_classes("body", covered=True)
+    assert "FEMALE_BREAST_COVERED" in classes
+    plain = bench.censor_classes("body")
+    assert "FEMALE_BREAST_COVERED" not in plain
+
+    assert bench.config_name(0.4, 8, 1.0, 0.1, 0, True).endswith("-cov")
+    assert bench.config_name(0.4, 8, 1.0, 0.1) == "pad0.4-pp8-mp1-sa0.1"
+
+    _write_dets(tmp_path / "dets.jsonl", [[(FEET, 0.9, (10, 10, 40, 40))] for _ in range(2)])
+    monkeypatch.setattr(bench, "run_replay", _fake_replay)
+    bench.cmd_replay(_args(["replay", str(tmp_path), "--covered"]))
+    run_dir = tmp_path / "pad0.4-pp8-mp3-sa0.1-cov"
+    assert (run_dir / "score.json").is_file()
+    payload = json.loads((run_dir / "score.json").read_text(encoding="utf-8"))
+    assert payload["config"]["covered"] is True
+    assert "FEMALE_BREAST_COVERED" in payload["config"]["classes"]
+    capsys.readouterr()
+
+
+def test_compute_motion_header_has_size_and_mtime(tmp_path):
+    import os
+
+    import numpy as np
+
+    rng = np.random.default_rng(1)
+    frame = rng.integers(0, 256, size=(120, 160, 3), dtype=np.uint8)
+    video = _write_video(tmp_path / "still.mp4", [frame] * 4)
+
+    out = tmp_path / "motion.jsonl"
+    bench.compute_motion(video, out)
+    header = json.loads(out.read_text(encoding="utf-8").splitlines()[0])
+    st = os.stat(video)
+    assert header["type"] == "motion"
+    assert header["video"] == str(video.resolve())
+    assert header["size"] == st.st_size
+    assert header["mtime_ns"] == st.st_mtime_ns
+
+
+def test_load_or_compute_motion_recomputes_stale_cache(tmp_path):
+    import os
+
+    import numpy as np
+
+    width, height, step, n = 160, 120, 8, 5
+    rng = np.random.default_rng(0)
+    tall = rng.integers(0, 256, size=(height + step * n, width, 3), dtype=np.uint8)
+    frames_a = [tall[i * step : i * step + height] for i in range(n)]
+    video = tmp_path / "rec.mp4"
+    _write_video(video, frames_a)
+    bench.compute_motion(video, tmp_path / "motion.jsonl")
+    stale = bench.load_motion(tmp_path / "motion.jsonl")
+    assert any(m >= 0.5 for m in stale.values())
+
+    static_rng = np.random.default_rng(1)
+    static_frame = static_rng.integers(0, 256, size=(height, width, 3), dtype=np.uint8)
+    _write_video(video, [static_frame] * n)
+    st = os.stat(video)
+    os.utime(video, ns=(st.st_atime_ns, st.st_mtime_ns + 2_000_000_000))
+
+    mags = bench._load_or_compute_motion(tmp_path, {"video": str(video), "frames": n})
+    fresh = bench.load_motion(bench.compute_motion(video, tmp_path / "fresh.jsonl"))
+    assert mags == fresh
+    assert mags != stale
+
+
+def test_load_or_compute_motion_reuses_valid_cache(tmp_path, monkeypatch):
+    import numpy as np
+
+    rng = np.random.default_rng(1)
+    frame = rng.integers(0, 256, size=(120, 160, 3), dtype=np.uint8)
+    video = _write_video(tmp_path / "still.mp4", [frame] * 4)
+    bench.compute_motion(video, tmp_path / "motion.jsonl")
+    expected = bench.load_motion(tmp_path / "motion.jsonl")
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("compute_motion must not be called for a valid cache")
+
+    monkeypatch.setattr(bench, "compute_motion", _boom)
+    mags = bench._load_or_compute_motion(tmp_path, {"video": str(video), "frames": 4})
+    assert mags == expected
+
+
+def test_load_or_compute_motion_recomputes_unparseable_cache(tmp_path):
+    import numpy as np
+
+    rng = np.random.default_rng(1)
+    frame = rng.integers(0, 256, size=(120, 160, 3), dtype=np.uint8)
+    video = _write_video(tmp_path / "still.mp4", [frame] * 4)
+    motion_path = tmp_path / "motion.jsonl"
+    motion_path.write_text("garbage not json\nmore garbage\n", encoding="utf-8")
+
+    mags = bench._load_or_compute_motion(tmp_path, {"video": str(video), "frames": 4})
+    fresh = bench.load_motion(bench.compute_motion(video, tmp_path / "fresh.jsonl"))
+    assert mags == fresh
+    first = json.loads(motion_path.read_text(encoding="utf-8").splitlines()[0])
+    assert first["type"] == "motion"
+    assert first["video"] == str(video.resolve())
+    assert "size" in first and "mtime_ns" in first
+
+
+def test_load_or_compute_motion_recomputes_on_frames_mismatch(tmp_path, monkeypatch):
+    import numpy as np
+
+    rng = np.random.default_rng(1)
+    frame = rng.integers(0, 256, size=(120, 160, 3), dtype=np.uint8)
+    video = _write_video(tmp_path / "still.mp4", [frame] * 4)
+    bench.compute_motion(video, tmp_path / "motion.jsonl")
+
+    real = bench.compute_motion
+    calls: list = []
+
+    def counting(*args, **kwargs):
+        calls.append(1)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(bench, "compute_motion", counting)
+    mags = bench._load_or_compute_motion(tmp_path, {"video": str(video), "frames": 5})
+    assert len(calls) == 1
+    assert mags is not None
+
+
+def test_load_or_compute_motion_recomputes_legacy_cache(tmp_path, monkeypatch):
+    import os
+
+    import numpy as np
+
+    rng = np.random.default_rng(1)
+    frame = rng.integers(0, 256, size=(120, 160, 3), dtype=np.uint8)
+    video = _write_video(tmp_path / "still.mp4", [frame] * 4)
+    motion_path = tmp_path / "motion.jsonl"
+    bench.compute_motion(video, motion_path)
+
+    lines = motion_path.read_text(encoding="utf-8").splitlines()
+    legacy = json.loads(lines[0])
+    del legacy["size"]
+    del legacy["mtime_ns"]
+    motion_path.write_text(
+        json.dumps(legacy) + "\n" + "\n".join(lines[1:]) + "\n", encoding="utf-8"
+    )
+
+    real = bench.compute_motion
+    calls: list = []
+
+    def counting(*args, **kwargs):
+        calls.append(1)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(bench, "compute_motion", counting)
+    mags = bench._load_or_compute_motion(tmp_path, {"video": str(video), "frames": 4})
+    assert len(calls) == 1
+    assert mags is not None
+    refreshed = json.loads(motion_path.read_text(encoding="utf-8").splitlines()[0])
+    st = os.stat(video)
+    assert refreshed["size"] == st.st_size
+    assert refreshed["mtime_ns"] == st.st_mtime_ns

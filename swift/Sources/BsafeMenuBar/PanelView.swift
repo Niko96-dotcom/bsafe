@@ -25,18 +25,26 @@ struct PanelView: View {
             Divider()
 
             Picker("Censor", selection: controller.binding(\.censor)) {
-                Text("Body parts").tag(Censor.body)
-                Text("All nudity").tag(Censor.all)
-                Text("Female").tag(Censor.female)
-                Text("Male").tag(Censor.male)
+                Text("Everything exposed").tag(Censor.body)
+                Text("Explicit only").tag(Censor.all)
+                Text("Explicit (female)").tag(Censor.female)
+                Text("Explicit (male)").tag(Censor.male)
             }
             .pickerStyle(.menu)
             .accessibilityLabel("Censor")
+            Text(controller.censorCaption)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
 
             Toggle("Feet", isOn: controller.feetBinding)
                 .disabled(controller.settings.censor == .body)
                 .help("Body already includes feet.")
                 .accessibilityLabel("Feet")
+
+            Toggle("Covered (swimwear, lingerie)", isOn: controller.binding(\.covered))
+                .help("Also censor covered breasts, crotch and butt.")
+                .accessibilityLabel("Covered")
 
             Picker("Style", selection: controller.binding(\.style)) {
                 Text("Pixelate").tag(Style.pixelate)

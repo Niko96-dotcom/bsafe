@@ -6,13 +6,13 @@ public struct TrackerConfig {
     /// an edge it moves inward moves by shrinkAlpha of the difference per 0.1 s of detection time.
     public var shrinkAlpha: Double = 0.1
     /// Minimum detection-time a track persists after its last match, even if miss count is exceeded.
-    public var minPersistSeconds: Double = 1.0
+    public var minPersistSeconds: Double = 3.0
     public var historyCapacity: Int = 48
     public var frameSearchRadius: Int = 12
     public var catchUpSearchRadius: Int = 24
     public var maxLeadSeconds: Double = 0.1
 
-    public init(persistPasses: Int = 8, shrinkAlpha: Double = 0.1, minPersistSeconds: Double = 1.0) {
+    public init(persistPasses: Int = 8, shrinkAlpha: Double = 0.1, minPersistSeconds: Double = 3.0) {
         self.persistPasses = max(1, persistPasses)
         var a = shrinkAlpha
         if a.isNaN { a = 0.1 }
@@ -20,7 +20,7 @@ public struct TrackerConfig {
         if a > 1 { a = 1 }
         self.shrinkAlpha = a
         var m = minPersistSeconds
-        if m.isNaN { m = 1.0 }
+        if m.isNaN { m = 3.0 }
         if m < 0 { m = 0 }
         self.minPersistSeconds = m
         self.historyCapacity = 48

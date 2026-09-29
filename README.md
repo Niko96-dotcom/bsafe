@@ -82,10 +82,14 @@ survive reinstalls; without one it signs ad-hoc and grants reset on every
 reinstall.
 
 Settings map to `bsafe start` flags: Censor → `--censor`, Feet →
-`--feet`/`--no-feet`, Style → `--pixels`/`--blur`, Padding → `--padding`,
+`--feet`/`--no-feet`, Covered → `--covered`/`--no-covered`,
+Style → `--pixels`/`--blur`, Padding → `--padding`,
 Min padding → `--min-padding`, Quality → Fast (`--extra-scales none`),
-Standard (`--extra-scales 0.5`), Strict (`--detect-scale 1.5
---extra-scales 0.5`).
+Standard (`--extra-scales 0.5`), Strict (`--extra-scales 0.5,0.25`). The
+extra 0.25x pass catches very large close-ups: over five simulated X sessions
+it leaked about as little as `--detect-scale 1.5 --extra-scales 1.0,0.5`
+(5.0% vs 5.2%) and missed fewer objects (10.5% vs 12.7%) at about half the
+detection cost (~23 ms vs ~47 ms per frame).
 
 If `bsafe start` exits unexpectedly while switched on, the app relaunches it
 (2/5/10/30 s backoff) and gives up after 5 failures within 5 minutes.
@@ -150,7 +154,7 @@ Shared flags (work with both `start` and `video`):
 - `--confidence N` — minimum detection confidence, 0.0–1.0 (default: 0.0 for NudeNet, 0.2 for EraX)
 - `--censor {none,female,male,all,body}` — what to censor (default: all). `body` censors every exposed body part except faces (adds buttocks, feet, belly, armpits and male chest to `all`). Use `none` to skip nudity censoring while still using additive flags like `--face-male`
 - `--padding N` — box expansion fraction (default: 0.0)
-- `--persist-frames N` — frames a box persists after disappearing (default: 8). In live `start` these are detection passes, and a box also stays at least 1.0 s after its last detection
+- `--persist-frames N` — frames a box persists after disappearing (default: 8). In live `start` these are detection passes, and a box also stays at least 3.0 s after its last detection
 - `--smooth-alpha N` — EMA smoothing weight for `video` box tracking, 0.0–1.0 (default: 0.5). Live `start` ignores it (see "How live mode works")
 - `--blur [N]` — blur effect (default intensity: 1.0)
 - `--pixels [N]` — pixelation effect (default intensity: 1.0)
@@ -172,7 +176,7 @@ Shared flags (work with both `start` and `video`):
 - `--stats` — log live detection timing every ~2s plus native capture/tracking stats
 - `--detect-scale N` — detection resolution as a multiple of the display's point size (default 1.0). 1.5 detects images down to ~100 pt wide at ~2x GPU cost
 - `--min-padding N` — minimum padding in capture pixels per side, added to small boxes (default: 0). Units are the capture size printed at startup (`Display 1: capturing 1728x1117 px`). Small detections carry most of the leaked area and proportional `--padding` barely grows them: on scrolling X feed recordings at live capture size, a 24 px floor cut leak by up to 20% for about +0.15% of screen over-censor
-- `--extra-scales LIST` — extra detection passes at these multiples of point size, e.g. `0.5` or `0.5,0.75` (each must be < `--detect-scale`; default `0.5` for NudeNet, `none` to disable). The 320n model was trained at 320 px input and misses large close-ups full-frame at native 1728 px: one extra 0.5x pass cut leak vs a 640m oracle from 18.9% to 10.3% (feet), 50.7% to 32.5% (armpits), 17.5% to 16.5% (butt) for ~+5 ms per frame. Strict mode: `bsafe start --detect-scale 1.5` keeps the extra 0.5 pass and additionally halves small-object misses at ~2x total cost. NudeNet-only (warned and ignored with EraX)
+- `--extra-scales LIST` — extra detection passes at these multiples of point size, e.g. `0.5` or `0.5,0.75` (each must be < `--detect-scale`; default `0.5` for NudeNet, `none` to disable). The 320n model was trained at 320 px input and misses large close-ups full-frame at native 1728 px: one extra 0.5x pass cut leak vs a 640m oracle from 18.9% to 10.3% (feet), 50.7% to 32.5% (armpits), 17.5% to 16.5% (butt) for ~+5 ms per frame. Strict mode: `bsafe start --extra-scales 0.5,0.25` adds a pass for very large close-ups (~1.3x Standard's cost). `--detect-scale 1.5 --extra-scales 1.0,0.5` helps tiny objects (feet, small thumbnails) but costs ~2x Strict for the same overall leak; keep a native-size 1.0 pass with 1.5x, or mid-size objects such as armpit close-ups are missed. NudeNet-only (warned and ignored with EraX)
 
 ### How live mode works
 
@@ -192,7 +196,7 @@ multiple of the display's point size before detection. `1.0` is cheapest;
 `1.5` detects images down to ~100 pt wide at ~2x GPU cost (EraX models require
 `1.0`). The native tracker owns live tracking and persistence
 (`--persist-frames` tunes how many missed detection passes a track survives;
-a track is also kept for at least 1.0 s after its last match, so a fast detector
+a track is also kept for at least 3.0 s after its last match, so a fast detector
 cannot drop a box on a short miss). Python no longer smooths live boxes. When a
 new detection matches a track, each box edge that the detection moves outward
 snaps to it at once, and each edge it moves inward shrinks by a tenth of the

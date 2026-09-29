@@ -26,7 +26,7 @@ from statistics import fmean, median
 import cv2
 import numpy as np
 
-from bsafe.censor import CENSOR_PRESETS, build_censor_boxes
+from bsafe.censor import build_censor_boxes, resolve_censor_classes
 from bsafe.detector import Detection, get_model_backend, resolve_model
 from bsafe.style import bold, dim, error, info, success, warn
 
@@ -37,6 +37,7 @@ BOXES_NAME = "boxes.jsonl"
 DISPLAYED_NAME = "displayed.jsonl"
 SCORE_NAME = "score.json"
 SWEEP_NAME = "sweep.json"
+MOTION_NAME = "motion.jsonl"
 
 REPLAY_BINARY_NAME = "bsafe-replay"
 BUILD_HINT = "cd swift && swift build -c release"
@@ -55,19 +56,20 @@ GRID = 4  # coverage rasterized on a grid downscaled by this factor
 GT_DILATE = 0.5  # per side, as a fraction of each GT box size
 GT_MERGE_IOU = 0.5  # same-frame, same-class GT boxes merged into their union
 LIVE_MATCH_IOU = 0.1  # live-vs-GT IoU to count an object as "seen" by live
+STILL_PX = 0.5  # motion magnitude below this (full-res px) counts as "still"
 
 # Replay defaults (TrackerConfig defaults in Swift)
 DEFAULT_PRESENT_LEAD_MS = 16.0
 DEFAULT_OVERHEAD_MS = 6.0
 DEFAULT_PERSIST_PASSES = 8
-DEFAULT_MIN_PERSIST_S = 1.0
+DEFAULT_MIN_PERSIST_S = 3.0
 DEFAULT_SHRINK_ALPHA = 0.1
 DEFAULT_MAX_LEAD_S = 0.1
 DEFAULT_CENSOR = "body"
 
 # Sweep grid (3 x 2 x 2 = 12 configs)
 SWEEP_PADDINGS = (0.0, 0.2, 0.4)
-SWEEP_PERSIST = ((8, 0.6), (8, 1.0))
+SWEEP_PERSIST = ((8, 1.0), (8, 3.0))
 SWEEP_SHRINK = (0.25, 0.1)
 
 Box = tuple[float, float, float, float]  # x, y, w, h
@@ -139,12 +141,9 @@ def _iou(a: Box, b: Box) -> float:
     return inter / union
 
 
-def censor_classes(preset: str) -> frozenset[str]:
+def censor_classes(preset: str, covered: bool = False) -> frozenset[str]:
     """Resolve a censor preset name to its class set. Raises ValueError if unknown."""
-    if preset not in CENSOR_PRESETS:
-        known = ", ".join(sorted(CENSOR_PRESETS))
-        raise ValueError(f"unknown censor preset '{preset}'. Known presets: {known}")
-    return CENSOR_PRESETS[preset]
+    return resolve_censor_classes(preset, covered=covered)
 
 
 def require_dets(base: Path) -> Path:
@@ -162,6 +161,240 @@ def require_video(header: dict, dets_path: Path) -> str:
     if not video:
         raise ValueError(f"{dets_path} has no 'video' path in its header — re-run bench detect")
     return str(video)
+
+
+# --- Motion labels (still vs moving) -----------------------------------------
+
+
+def compute_motion(video_path: str | Path, out_path: str | Path, downscale: int = 4) -> Path:
+    """Estimate per-frame global motion; write ``motion.jsonl`` (metadata only).
+
+    Each frame is grayscaled, resized by 1/downscale (INTER_AREA), and the
+    shift between consecutive frames is estimated with ``cv2.phaseCorrelate``
+    on float32 images with a Hanning window. ``dx``/``dy`` are stored in
+    FULL-resolution pixels (small-image shift multiplied by ``downscale``);
+    frame 0 is 0,0. Only numeric metadata is written — never pixels.
+    Returns the motion.jsonl path.
+    """
+    src = Path(video_path).expanduser()
+    if not src.is_file():
+        raise FileNotFoundError(f"video not found: {src}")
+    cap = cv2.VideoCapture(str(src))
+    if not cap.isOpened():
+        raise RuntimeError(f"cannot open video: {src}")
+    try:
+        ok, frame = cap.read()
+    except Exception as e:
+        cap.release()
+        raise RuntimeError(f"cannot read video: {src}") from e
+    if not ok or frame is None:
+        cap.release()
+        raise RuntimeError(f"no frames decoded from {src}")
+
+    out = Path(out_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        resolved = str(src.resolve())
+    except Exception:
+        resolved = str(src)
+    st = os.stat(src)
+    size = st.st_size
+    mtime_ns = st.st_mtime_ns
+    if not math.isfinite(float(downscale)) or int(downscale) < 1:
+        raise ValueError(f"downscale must be >= 1, got {downscale!r}")
+    scale = float(downscale)
+
+    shifts: list[tuple[float, float, float]] = []
+    prev: np.ndarray | None = None
+    window: np.ndarray | None = None
+    n = 0
+    try:
+        while True:
+            if frame is None or not ok:
+                break
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            if scale == 1:
+                small = gray
+            else:
+                small = cv2.resize(
+                    gray,
+                    None,
+                    fx=1.0 / scale,
+                    fy=1.0 / scale,
+                    interpolation=cv2.INTER_AREA,
+                )
+            curr = small.astype(np.float32)
+            if prev is None or curr.shape != prev.shape:
+                window = cv2.createHanningWindow((curr.shape[1], curr.shape[0]), cv2.CV_32F)
+                shifts.append((0.0, 0.0, 1.0))
+                prev = curr
+            else:
+                try:
+                    shift, response = cv2.phaseCorrelate(prev, curr, window)
+                except Exception as e:
+                    raise RuntimeError(f"phaseCorrelate failed on frame {n}: {e}") from e
+                shifts.append(
+                    (
+                        float(shift[0]) * scale,
+                        float(shift[1]) * scale,
+                        float(response),
+                    )
+                )
+                prev = curr
+            n += 1
+            ok, frame = cap.read()
+    finally:
+        cap.release()
+
+    tmp = out.with_name(out.name + ".tmp")
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(
+                _json(
+                    {
+                        "type": "motion",
+                        "video": resolved,
+                        "downscale": int(downscale),
+                        "frames": n,
+                        "size": size,
+                        "mtime_ns": mtime_ns,
+                    }
+                )
+                + "\n"
+            )
+            for i, (dx, dy, response) in enumerate(shifts):
+                f.write(
+                    _json(
+                        {
+                            "frame": i,
+                            "dx": float(dx),
+                            "dy": float(dy),
+                            "response": float(response),
+                        }
+                    )
+                    + "\n"
+                )
+        os.replace(tmp, out)
+    except Exception:
+        try:
+            if tmp.exists():
+                os.unlink(tmp)
+        except Exception:
+            pass
+        raise
+    return out
+
+
+def load_motion(path: str | Path) -> dict[int, float]:
+    """Read motion.jsonl. Returns {frame: |shift| magnitude in full-res px}."""
+    mags: dict[int, float] = {}
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            obj = _parse_line(line)
+            if obj is None:
+                continue
+            if obj.get("type") == "motion":
+                continue
+            if "frame" not in obj:
+                continue
+            dx = float(obj.get("dx", 0.0))
+            dy = float(obj.get("dy", 0.0))
+            mags[int(obj["frame"])] = math.hypot(dx, dy)
+    return mags
+
+
+def _motion_cache_valid(motion_path, video_path, frames, downscale=4) -> bool:
+    """True when DIR/motion.jsonl belongs to the current dets header video.
+
+    Reads only the first line. Requires type "motion", matching resolved
+    video path and downscale, matching size/mtime_ns from os.stat, and —
+    when ``frames`` is a positive int — a matching frames count. Any parse
+    error, missing key, or mismatch returns False. Never raises.
+    """
+    try:
+        with open(motion_path, encoding="utf-8") as f:
+            first = f.readline()
+        if not first.strip():
+            return False
+        cached = json.loads(first)
+        if not isinstance(cached, dict):
+            return False
+        if cached.get("type") != "motion":
+            return False
+        vp = Path(str(video_path)).expanduser()
+        try:
+            expected_video = str(vp.resolve())
+        except Exception:
+            expected_video = str(vp)
+        if cached.get("video") != expected_video:
+            return False
+        if cached.get("downscale") != int(downscale):
+            return False
+        current = os.stat(vp)
+        if cached.get("size") != current.st_size:
+            return False
+        if cached.get("mtime_ns") != current.st_mtime_ns:
+            return False
+        if isinstance(frames, int) and not isinstance(frames, bool) and frames > 0:
+            if cached.get("frames") != frames:
+                return False
+        return True
+    except Exception:
+        return False
+
+
+def _load_or_compute_motion(base: Path, header: dict) -> dict[int, float] | None:
+    """Return per-frame motion magnitudes for a detect dir, or None.
+
+    Reuses DIR/motion.jsonl only when its header matches the dets header's
+    video (resolved path, size, mtime_ns, downscale, frames); otherwise
+    recomputes it once from the dets header's video path (dim status line).
+    When the video is missing or unreadable, warns on stderr and returns
+    None (phase metrics skipped).
+    """
+    motion_path = base / MOTION_NAME
+    video = header.get("video")
+    if not video:
+        print(
+            f"{warn('Warning:')} dets header has no video path — skipping phase metrics",
+            file=sys.stderr,
+        )
+        return None
+    video_path = Path(str(video)).expanduser()
+    if not video_path.is_file():
+        print(
+            f"{warn('Warning:')} video not found ({video_path}) — skipping phase metrics",
+            file=sys.stderr,
+        )
+        return None
+    if motion_path.is_file():
+        try:
+            if _motion_cache_valid(motion_path, video_path, header.get("frames")):
+                try:
+                    return load_motion(motion_path)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        print(dim(f"Recomputing stale motion for {video_path}..."))
+    else:
+        print(dim(f"Computing motion for {video_path}..."))
+    try:
+        compute_motion(video_path, motion_path)
+    except Exception as e:
+        print(
+            f"{warn('Warning:')} motion estimation failed: {e} — skipping phase metrics",
+            file=sys.stderr,
+        )
+        return None
+    try:
+        return load_motion(motion_path)
+    except Exception as e:
+        print(
+            f"{warn('Warning:')} cannot read {motion_path}: {e} — skipping phase metrics",
+            file=sys.stderr,
+        )
+        return None
 
 
 # --- JSONL I/O --------------------------------------------------------------
@@ -966,6 +1199,41 @@ def _group_metrics(
     }
 
 
+def _phase_metrics(
+    tracks: list[Track],
+    disp_pts: list[float],
+    disp_boxes: list[tuple[Box, ...]],
+    pts_of,
+    motion: dict[int, float],
+    still: bool,
+) -> dict:
+    """Leak metrics restricted to GT (track, frame) pairs in one motion phase.
+
+    A GT frame is "still" when its motion magnitude < STILL_PX, "moving"
+    otherwise (missing frames count as moving). Uses the same
+    coverage_fraction / on_screen_display / COVER_THRESHOLD logic as
+    :func:`_group_metrics`.
+    """
+    leaks: list[float] = []
+    n_gt_boxes = 0
+    for track in tracks:
+        for frame in track.frames:
+            is_still = motion.get(frame, STILL_PX) < STILL_PX
+            if is_still != still:
+                continue
+            n_gt_boxes += 1
+            boxes: tuple[Box, ...] = ()
+            if disp_pts:
+                boxes = disp_boxes[on_screen_display(disp_pts, pts_of(frame))]
+            leaks.append(1.0 - coverage_fraction(track.boxes[frame], boxes))
+    n_leak_frames = sum(1 for leak in leaks if leak > 1.0 - COVER_THRESHOLD)
+    return {
+        "leak_frac": fmean(leaks) if leaks else 0.0,
+        "leak_frames_pct": 100.0 * n_leak_frames / len(leaks) if leaks else 0.0,
+        "n_gt_boxes": n_gt_boxes,
+    }
+
+
 def score(
     dets_path: str | Path,
     displayed_path: str | Path,
@@ -973,6 +1241,7 @@ def score(
     gt_conf: float = DEFAULT_GT_CONF,
     gap_s: float = DEFAULT_GAP_S,
     gt_dets: list[str | Path] | tuple[str | Path, ...] | None = None,
+    motion: dict[int, float] | None = None,
 ) -> dict:
     """Score replayed boxes against oracle ground truth.
 
@@ -985,6 +1254,10 @@ def score(
     Over-censor averages over every displayed frame against the dilated GT of
     the nearest dets frame, so persistence after content is gone is charged;
     per-class ``over_censor_pct`` is None (displayed boxes carry no class).
+    With ``motion`` (per-frame |shift| magnitudes in full-res px), also
+    returns ``"by_phase": {"still": {...}, "moving": {...}}`` with
+    ``leak_frac``/``leak_frames_pct``/``n_gt_boxes`` restricted to GT pairs
+    in that phase (still: magnitude < STILL_PX); omitted when motion is None.
     Returns ``{"overall": {...}, "per_class": {...}}``; the run's config is
     added by :func:`cmd_replay`.
     """
@@ -1037,7 +1310,13 @@ def score(
     per_class: dict[str, dict] = {}
     for cls in sorted({t.cls for t in tracks}):
         per_class[cls] = group([t for t in tracks if t.cls == cls], False)
-    return {"overall": group(tracks, True), "per_class": per_class}
+    result: dict = {"overall": group(tracks, True), "per_class": per_class}
+    if motion is not None:
+        result["by_phase"] = {
+            "still": _phase_metrics(tracks, disp_pts, disp_boxes, pts_of, motion, True),
+            "moving": _phase_metrics(tracks, disp_pts, disp_boxes, pts_of, motion, False),
+        }
+    return result
 
 
 # --- Sweep ------------------------------------------------------------------
@@ -1049,6 +1328,7 @@ def config_name(
     min_persist_s: float,
     shrink_alpha: float,
     min_padding: int = 0,
+    covered: bool = False,
 ) -> str:
     """Deterministic run subdirectory name for a replay config."""
     pad = _num(padding)
@@ -1057,6 +1337,8 @@ def config_name(
     name = f"pad{pad}-pp{int(persist_passes)}-mp{mp}-sa{sa}"
     if min_padding:
         name += f"-mpx{int(min_padding)}"
+    if covered:
+        name += "-cov"
     return name
 
 
@@ -1066,22 +1348,45 @@ def _fmt_ms(value) -> str:
     return f"{value:.0f}"
 
 
+def _entry_by_phase(entry: dict) -> dict | None:
+    """Return an entry's by_phase dict, whether top-level or inside overall."""
+    by_phase = entry.get("by_phase")
+    if isinstance(by_phase, dict):
+        return by_phase
+    overall = entry.get("overall")
+    if isinstance(overall, dict):
+        inner = overall.get("by_phase")
+        if isinstance(inner, dict):
+            return inner
+    return None
+
+
 def print_table(results: list[dict]) -> None:
     """Print a compact aligned results table, best (lowest leak_frac) first."""
+    show_phase = any(_entry_by_phase(e) is not None for e in results)
     columns = ("config", "leak_frac", "leak_frames%", "flick/min", "first_cover_ms", "over_censor%")
+    if show_phase:
+        columns = columns + ("still_leak", "moving_leak")
     rows = [tuple(str(c) for c in columns)]
     for entry in results:
         o = entry["overall"]
-        rows.append(
-            (
-                entry["name"],
-                f"{o['leak_frac']:.3f}",
-                f"{o['leak_frames_pct']:.1f}",
-                f"{o['flicker_per_min']:.1f}",
-                _fmt_ms(o["first_cover_ms"]),
-                f"{o['over_censor_pct']:.2f}",
-            )
-        )
+        row = [
+            entry["name"],
+            f"{o['leak_frac']:.3f}",
+            f"{o['leak_frames_pct']:.1f}",
+            f"{o['flicker_per_min']:.1f}",
+            _fmt_ms(o["first_cover_ms"]),
+            f"{o['over_censor_pct']:.2f}",
+        ]
+        if show_phase:
+            by_phase = _entry_by_phase(entry)
+            if by_phase is not None:
+                row.append(f"{by_phase['still']['leak_frac']:.3f}")
+                row.append(f"{by_phase['moving']['leak_frac']:.3f}")
+            else:
+                row.append("-")
+                row.append("-")
+        rows.append(tuple(row))
     widths = [max(len(row[i]) for row in rows) for i in range(len(columns))]
     print("  ".join(c.ljust(w) for c, w in zip(columns, widths, strict=True)))
     print(dim("─" * (sum(widths) + 2 * (len(widths) - 1))))
@@ -1089,7 +1394,12 @@ def print_table(results: list[dict]) -> None:
         print("  ".join(c.ljust(w) for c, w in zip(row, widths, strict=True)))
 
 
-def _sweep_configs(censor: str, classes: frozenset[str], min_padding: int = 0) -> list[dict]:
+def _sweep_configs(
+    censor: str,
+    classes: frozenset[str],
+    min_padding: int = 0,
+    covered: bool = False,
+) -> list[dict]:
     configs = []
     for padding in SWEEP_PADDINGS:
         for persist_passes, min_persist_s in SWEEP_PERSIST:
@@ -1097,11 +1407,17 @@ def _sweep_configs(censor: str, classes: frozenset[str], min_padding: int = 0) -
                 configs.append(
                     {
                         "name": config_name(
-                            padding, persist_passes, min_persist_s, shrink_alpha, min_padding
+                            padding,
+                            persist_passes,
+                            min_persist_s,
+                            shrink_alpha,
+                            min_padding,
+                            covered,
                         ),
                         "config": {
                             "censor": censor,
                             "classes": sorted(classes),
+                            "covered": bool(covered),
                             "padding": padding,
                             "min_padding": min_padding,
                             "persist_passes": persist_passes,
@@ -1125,17 +1441,19 @@ def sweep(
     overhead_ms: float = DEFAULT_OVERHEAD_MS,
     min_padding: int = 0,
     gt_dets: list[str | Path] | tuple[str | Path, ...] | None = None,
+    covered: bool = False,
 ) -> dict:
     """Run a grid of replay configs over one detect directory; write sweep.json."""
     base = Path(det_dir).expanduser()
     dets_path = require_dets(base)
     header, _records = read_dets(dets_path)
     video = require_video(header, dets_path)
-    classes = censor_classes(censor)
+    classes = censor_classes(censor, covered=covered)
     gt_sources = [str(Path(p).expanduser().resolve()) for p in (gt_dets or [])]
+    motion = _load_or_compute_motion(base, header)
 
     results: list[dict] = []
-    for entry in _sweep_configs(censor, classes, min_padding):
+    for entry in _sweep_configs(censor, classes, min_padding, covered):
         cfg = entry["config"]
         cfg["gt_sources"] = list(gt_sources)
         cfg["gt_conf"] = gt_conf
@@ -1155,7 +1473,9 @@ def sweep(
             min_persist_s=cfg["min_persist_s"],
             shrink_alpha=cfg["shrink_alpha"],
         )
-        scored = score(dets_path, run_dir / DISPLAYED_NAME, classes, gt_conf, gap_s, gt_dets)
+        scored = score(
+            dets_path, run_dir / DISPLAYED_NAME, classes, gt_conf, gap_s, gt_dets, motion
+        )
         payload = {"config": cfg, **scored}
         with open(run_dir / SCORE_NAME, "w", encoding="utf-8") as f:
             f.write(json.dumps(payload, indent=2) + "\n")
@@ -1167,6 +1487,7 @@ def sweep(
     payload = {
         "video": video,
         "censor": censor,
+        "covered": bool(covered),
         "gt_conf": gt_conf,
         "gap_s": gap_s,
         "gt_sources": list(gt_sources),
@@ -1212,14 +1533,20 @@ def cmd_replay(args) -> None:
         dets_path = require_dets(base)
         header, records = read_dets(dets_path)
         video = require_video(header, dets_path)
-        classes = censor_classes(args.censor)
+        covered = bool(getattr(args, "covered", False))
+        classes = censor_classes(args.censor, covered=covered)
         if args.padding < 0:
             raise ValueError("--padding must be >= 0")
         if getattr(args, "min_padding", 0) < 0:
             raise ValueError("--min-padding must be >= 0")
         min_padding = int(getattr(args, "min_padding", 0))
         name = args.name or config_name(
-            args.padding, args.persist_passes, args.min_persist_s, args.shrink_alpha, min_padding
+            args.padding,
+            args.persist_passes,
+            args.min_persist_s,
+            args.shrink_alpha,
+            min_padding,
+            covered,
         )
         run_dir = base / name
         run_dir.mkdir(parents=True, exist_ok=True)
@@ -1229,6 +1556,7 @@ def cmd_replay(args) -> None:
         cfg = {
             "censor": args.censor,
             "classes": sorted(classes),
+            "covered": covered,
             "padding": args.padding,
             "min_padding": min_padding,
             "persist_passes": args.persist_passes,
@@ -1262,6 +1590,7 @@ def cmd_replay(args) -> None:
             shrink_alpha=args.shrink_alpha,
         )
         print(f"Displayed: {bold(str(run_dir / DISPLAYED_NAME))}")
+        motion = _load_or_compute_motion(base, header)
         payload = {
             "config": cfg,
             **score(
@@ -1271,12 +1600,13 @@ def cmd_replay(args) -> None:
                 gt_conf,
                 DEFAULT_GAP_S,
                 gt_dets or None,
+                motion,
             ),
         }
         score_path = run_dir / SCORE_NAME
         with open(score_path, "w", encoding="utf-8") as f:
             f.write(json.dumps(payload, indent=2) + "\n")
-        print_score(payload["overall"])
+        print_score(payload["overall"], payload.get("by_phase"))
         print(f"{success('Saved')} {bold(str(score_path))}")
     except KeyboardInterrupt:
         print("\nInterrupted.", file=sys.stderr)
@@ -1285,17 +1615,24 @@ def cmd_replay(args) -> None:
         _fail(e)
 
 
-def print_score(overall: dict) -> None:
+def print_score(overall: dict, by_phase: dict | None = None) -> None:
     """Print a one-line score summary with the headline metrics."""
+    if by_phase is None and isinstance(overall.get("by_phase"), dict):
+        by_phase = overall["by_phase"]
     leak = f"{overall['leak_frac']:.3f}"
     leak_frames = f"{overall['leak_frames_pct']:.1f}%"
     flicker = f"{overall['flicker_per_min']:.1f}/min"
     over_censor = f"{overall['over_censor_pct']:.2f}%"
-    print(
+    line = (
         f"leak_frac {info(leak)}  leak_frames {info(leak_frames)}  "
         f"flicker {info(flicker)}  first_cover {info(_fmt_ms(overall['first_cover_ms']))} ms  "
         f"over_censor {info(over_censor)}"
     )
+    if by_phase is not None:
+        still_leak = f"{by_phase['still']['leak_frac']:.3f}"
+        moving_leak = f"{by_phase['moving']['leak_frac']:.3f}"
+        line += f"  still_leak={info(still_leak)} moving_leak={info(moving_leak)}"
+    print(line)
     counts = f"objects {overall['n_objects']}, gt_boxes {overall['n_gt_boxes']}"
     print(dim(counts))
     missed = float(overall.get("objects_missed_pct", 0.0))
@@ -1315,6 +1652,7 @@ def cmd_sweep(args) -> None:
             min_padding=int(getattr(args, "min_padding", 0)),
             gt_conf=float(getattr(args, "gt_conf", DEFAULT_GT_CONF)),
             gt_dets=list(getattr(args, "gt_dets", None) or []) or None,
+            covered=bool(getattr(args, "covered", False)),
         )
     except KeyboardInterrupt:
         print("\nInterrupted.", file=sys.stderr)

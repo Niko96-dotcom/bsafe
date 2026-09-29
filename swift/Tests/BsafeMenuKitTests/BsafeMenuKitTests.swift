@@ -8,7 +8,7 @@ final class BsafeMenuKitTests: XCTestCase {
     func testDefaultArguments() {
         XCTAssertEqual(
             arguments(for: BsafeSettings()),
-            ["start", "--stats", "--censor", "body", "--feet",
+            ["start", "--stats", "--censor", "body", "--feet", "--no-covered",
              "--padding", "0.4", "--min-padding", "24",
              "--extra-scales", "0.5", "--detect-scale", "1.0",
              "--pixels", "1.0", "--blur", "0"]
@@ -20,7 +20,7 @@ final class BsafeMenuKitTests: XCTestCase {
         s.style = .blur
         XCTAssertEqual(
             arguments(for: s),
-            ["start", "--stats", "--censor", "body", "--feet",
+            ["start", "--stats", "--censor", "body", "--feet", "--no-covered",
              "--padding", "0.4", "--min-padding", "24",
              "--extra-scales", "0.5", "--detect-scale", "1.0",
              "--blur", "1.0", "--pixels", "0"]
@@ -42,8 +42,8 @@ final class BsafeMenuKitTests: XCTestCase {
 
         s.quality = .strict
         let strict = arguments(for: s)
-        XCTAssertEqual(Array(strict.dropFirst(strict.firstIndex(of: "--extra-scales")! + 1).prefix(1)), ["0.5"])
-        XCTAssertEqual(Array(strict.dropFirst(strict.firstIndex(of: "--detect-scale")! + 1).prefix(1)), ["1.5"])
+        XCTAssertEqual(Array(strict.dropFirst(strict.firstIndex(of: "--extra-scales")! + 1).prefix(1)), ["0.5,0.25"])
+        XCTAssertEqual(Array(strict.dropFirst(strict.firstIndex(of: "--detect-scale")! + 1).prefix(1)), ["1.0"])
     }
 
     func testFeetFlagAlwaysExplicit() {
@@ -54,6 +54,16 @@ final class BsafeMenuKitTests: XCTestCase {
         s.feet = true
         XCTAssertTrue(arguments(for: s).contains("--feet"))
         XCTAssertFalse(arguments(for: s).contains("--no-feet"))
+    }
+
+    func testCoveredFlagAlwaysExplicit() {
+        var s = BsafeSettings()
+        s.covered = true
+        XCTAssertTrue(arguments(for: s).contains("--covered"))
+        XCTAssertFalse(arguments(for: s).contains("--no-covered"))
+        s.covered = false
+        XCTAssertTrue(arguments(for: s).contains("--no-covered"))
+        XCTAssertFalse(arguments(for: s).contains("--covered"))
     }
 
     func testCensorValues() {
@@ -113,6 +123,7 @@ final class BsafeMenuKitTests: XCTestCase {
         let s = BsafeSettings()
         XCTAssertEqual(s.censor, .body)
         XCTAssertTrue(s.feet)
+        XCTAssertFalse(s.covered)
         XCTAssertEqual(s.style, .pixelate)
         XCTAssertEqual(s.padding, 0.4, accuracy: 1e-9)
         XCTAssertEqual(s.minPadding, 24)
@@ -121,6 +132,27 @@ final class BsafeMenuKitTests: XCTestCase {
 
     func testSettingsCodableRoundTrip() throws {
         let s = BsafeSettings(censor: .female, feet: false, style: .blur, padding: 0.2, minPadding: 8, quality: .strict)
+        let data = try JSONEncoder().encode(s)
+        XCTAssertEqual(try JSONDecoder().decode(BsafeSettings.self, from: data), s)
+    }
+
+    func testDecodesLegacySettingsWithoutCovered() throws {
+        let json = """
+            {"censor":"all","feet":true,"style":"blur","padding":0.3,"minPadding":16,"quality":"strict"}
+            """
+        let s = try JSONDecoder().decode(BsafeSettings.self, from: Data(json.utf8))
+        XCTAssertFalse(s.covered)
+        XCTAssertEqual(s.censor, .all)
+        XCTAssertTrue(s.feet)
+        XCTAssertEqual(s.style, .blur)
+        XCTAssertEqual(s.padding, 0.3, accuracy: 1e-9)
+        XCTAssertEqual(s.minPadding, 16)
+        XCTAssertEqual(s.quality, .strict)
+    }
+
+    func testCoveredRoundTrips() throws {
+        var s = BsafeSettings()
+        s.covered = true
         let data = try JSONEncoder().encode(s)
         XCTAssertEqual(try JSONDecoder().decode(BsafeSettings.self, from: data), s)
     }

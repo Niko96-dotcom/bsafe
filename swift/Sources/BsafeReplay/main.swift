@@ -14,7 +14,7 @@ func usage() -> String {
       --overhead-ms MS      default 6
       --persist-passes N    default 8
       --shrink-alpha A      default 0.25
-      --min-persist-s S     default 0.6
+      --min-persist-s S     default 3.0
       --max-lead-s S        default 0.1
     """
 }
@@ -45,7 +45,7 @@ var presentLeadMs = 16.0
 var overheadMs = 6.0
 var persistPasses = 8
 var shrinkAlpha = 0.1
-var minPersistS = 1.0
+var minPersistS = 3.0
 var maxLeadS = 0.1
 
 let args = CommandLine.arguments

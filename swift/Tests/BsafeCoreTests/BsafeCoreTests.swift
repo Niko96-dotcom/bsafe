@@ -294,6 +294,21 @@ final class BsafeCoreTests: XCTestCase {
         XCTAssertEqual(blended.h, b.h, accuracy: 1e-9)
     }
 
+    // 6b. default minimum persistence: 3 s since the last match, even past persistPasses
+    func testDefaultMinPersistSeconds() {
+        XCTAssertEqual(TrackerConfig().minPersistSeconds, 3.0)
+        let base = makeTexture(width: 320, height: 200, seed: 0x33333)
+        let tr = DisplayTracker(frameWidth: 320, frameHeight: 200, config: TrackerConfig(persistPasses: 1))
+        for (i, pts) in [0.0, 2.9, 3.1].enumerated() {
+            tr.ingestFrame(seq: UInt32(i), pts: pts, pyramid: pyr(base))
+        }
+        XCTAssertTrue(tr.applyDetections(seq: 0, boxes: [TrackBox(x: 50, y: 50, w: 60, h: 50)]))
+        XCTAssertTrue(tr.applyDetections(seq: 1, boxes: []))
+        XCTAssertEqual(tr.tracks.count, 1, "kept 2.9 s after last match")
+        XCTAssertTrue(tr.applyDetections(seq: 2, boxes: []))
+        XCTAssertEqual(tr.tracks.count, 0, "removed 3.1 s after last match")
+    }
+
     // 7. textureless adopts median
     func testTexturelessAdoptsMedian() {
         let w = 320

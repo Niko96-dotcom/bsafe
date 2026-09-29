@@ -22,6 +22,7 @@ public enum Quality: String, Codable, CaseIterable {
 public struct BsafeSettings: Codable, Equatable {
     public var censor: Censor
     public var feet: Bool
+    public var covered: Bool
     public var style: Style
     public var padding: Double
     public var minPadding: Int
@@ -30,6 +31,7 @@ public struct BsafeSettings: Codable, Equatable {
     public init(
         censor: Censor = .body,
         feet: Bool = true,
+        covered: Bool = false,
         style: Style = .pixelate,
         padding: Double = 0.4,
         minPadding: Int = 24,
@@ -37,10 +39,32 @@ public struct BsafeSettings: Codable, Equatable {
     ) {
         self.censor = censor
         self.feet = feet
+        self.covered = covered
         self.style = style
         self.padding = padding
         self.minPadding = minPadding
         self.quality = quality
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case censor
+        case feet
+        case covered
+        case style
+        case padding
+        case minPadding
+        case quality
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        censor = try container.decode(Censor.self, forKey: .censor)
+        feet = try container.decode(Bool.self, forKey: .feet)
+        covered = try container.decodeIfPresent(Bool.self, forKey: .covered) ?? false
+        style = try container.decode(Style.self, forKey: .style)
+        padding = try container.decode(Double.self, forKey: .padding)
+        minPadding = try container.decode(Int.self, forKey: .minPadding)
+        quality = try container.decode(Quality.self, forKey: .quality)
     }
 }
 
@@ -59,6 +83,7 @@ public func arguments(for settings: BsafeSettings) -> [String] {
     var args = ["start", "--stats"]
     args += ["--censor", settings.censor.rawValue]
     args.append(settings.feet ? "--feet" : "--no-feet")
+    args.append(settings.covered ? "--covered" : "--no-covered")
     args += ["--padding", formatPadding(settings.padding)]
     args += ["--min-padding", "\(min(64, max(0, settings.minPadding)))"]
     switch settings.quality {
@@ -67,7 +92,7 @@ public func arguments(for settings: BsafeSettings) -> [String] {
     case .standard:
         args += ["--extra-scales", "0.5", "--detect-scale", "1.0"]
     case .strict:
-        args += ["--extra-scales", "0.5", "--detect-scale", "1.5"]
+        args += ["--extra-scales", "0.5,0.25", "--detect-scale", "1.0"]
     }
     switch settings.style {
     case .pixelate:
