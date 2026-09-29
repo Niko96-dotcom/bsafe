@@ -404,3 +404,270 @@ def test_validate_live_options_erax_parses_extra_scales():
     validate_live_options("erax-nano", 1.0, "0.5")
     validate_live_options("erax-nano", 1.0, "none")
     validate_live_options("erax-nano", 1.0, None)
+
+
+def _textured_bgra(w=64, h=48, seed=0):
+    import numpy as np
+
+    rng = np.random.default_rng(seed)
+    return rng.integers(0, 256, size=(h, w, 4), dtype=np.uint8)
+
+
+def _textured_frame(display_id=1, w=64, h=48, seq=1, seed=7, shift_px=0):
+    import numpy as np
+
+    arr = _textured_bgra(w, h, seed)
+    if shift_px:
+        arr = np.roll(arr, shift_px, axis=1)
+    meta = RawFrameMeta(display_id, w, h, 0, seq)
+    return meta, memoryview(arr.tobytes()), 100.0
+
+
+class _FakeStill:
+    def __init__(self, detections=None, raise_=False):
+        self._detections = list(detections or [])
+        self._raise = raise_
+        self.calls = 0
+        self.prepare_calls: list = []
+
+    def prepare(self, w, h):
+        self.prepare_calls.append((w, h))
+
+    def detect_bgra(self, frame):
+        self.calls += 1
+        if self._raise:
+            raise RuntimeError("still boom")
+        return list(self._detections)
+
+    def close(self):
+        pass
+
+
+def test_stillness_tracker_first_none_then_still_grows():
+    from bsafe.live import StillnessTracker
+
+    tracker = StillnessTracker()
+    frame = _textured_bgra()
+    assert tracker.update(1, frame, 10.0) is None
+    assert tracker.update(2, frame, 10.0) is None
+    first = tracker.update(1, frame, 10.2)
+    assert first is not None and abs(first) < 0.05
+    assert tracker.update(1, frame, 11.0) == pytest.approx(0.8, abs=0.05)
+
+
+def test_stillness_tracker_shift_resets():
+    import numpy as np
+
+    from bsafe.live import StillnessTracker
+
+    tracker = StillnessTracker()
+    frame = _textured_bgra(seed=3)
+    assert tracker.update(1, frame, 0.0) is None
+    first = tracker.update(1, frame, 0.5)
+    assert first is not None
+    moved = np.roll(frame, 8, axis=1)
+    assert tracker.update(1, moved, 1.0) is None
+    assert tracker.update(1, moved, 1.5) == pytest.approx(0.0, abs=0.05)
+    assert tracker.update(1, moved, 2.0) == pytest.approx(0.5, abs=0.05)
+
+
+def test_stillness_tracker_shape_change_resets():
+    from bsafe.live import StillnessTracker
+
+    tracker = StillnessTracker()
+    small = _textured_bgra(w=64, h=48, seed=3)
+    big = _textured_bgra(w=80, h=48, seed=3)
+    assert tracker.update(1, small, 0.0) is None
+    assert tracker.update(1, small, 0.5) is not None
+    assert tracker.update(1, big, 1.0) is None
+    assert tracker.update(1, big, 1.5) == pytest.approx(0.0, abs=0.05)
+
+
+def test_step_still_runs_when_still_and_rate_limited():
+    now = [100.0]
+    frames = [_textured_frame(seq=i) for i in range(5)]
+    server = _FakeServer(frames)
+    fast = _FakeNude([])
+    still = _FakeStill([Detection("FEMALE_BREAST_EXPOSED", 0.9, (10, 10, 20, 20))])
+    sess = _session(
+        server,
+        fast,
+        still_detector=still,
+        still_period_s=2.0,
+        still_after_s=0.5,
+        print_fn=lambda *a, **k: None,
+        time_fn=lambda: now[0],
+    )
+    assert sess.step(0.01) is True
+    assert still.calls == 0
+    now[0] = 100.2
+    assert sess.step(0.01) is True
+    assert still.calls == 0
+    now[0] = 100.8
+    assert sess.step(0.01) is True
+    assert still.calls == 1
+    assert server.sends[-1][4] == [(10, 10, 20, 20)]
+    now[0] = 101.0
+    assert sess.step(0.01) is True
+    assert still.calls == 1
+    assert server.sends[-1][4] == []
+    now[0] = 103.0
+    assert sess.step(0.01) is True
+    assert still.calls == 2
+    assert server.sends[-1][4] == [(10, 10, 20, 20)]
+
+
+def test_step_still_skipped_when_moving():
+    now = [50.0]
+    frames = [_textured_frame(seq=i, shift_px=i * 8) for i in range(4)]
+    server = _FakeServer(frames)
+    still = _FakeStill([Detection("FEMALE_BREAST_EXPOSED", 0.9, (10, 10, 20, 20))])
+    sess = _session(
+        server,
+        _FakeNude([]),
+        still_detector=still,
+        print_fn=lambda *a, **k: None,
+        time_fn=lambda: now[0],
+    )
+    for _ in range(4):
+        now[0] += 1.0
+        assert sess.step(0.01) is True
+    assert still.calls == 0
+    assert all(send[4] == [] for send in server.sends)
+
+
+def test_step_still_skipped_on_erax():
+    now = [50.0]
+    frames = [_textured_frame(seq=i) for i in range(3)]
+    server = _FakeServer(frames)
+    still = _FakeStill([Detection("FEMALE_BREAST_EXPOSED", 0.9, (10, 10, 20, 20))])
+    sess = _session(
+        server,
+        _FakeEraX(),
+        is_nudenet=False,
+        still_detector=still,
+        print_fn=lambda *a, **k: None,
+        time_fn=lambda: now[0],
+    )
+    for _ in range(3):
+        now[0] += 1.0
+        assert sess.step(0.01) is True
+    assert still.calls == 0
+
+
+def test_step_still_exception_keeps_fast_detections():
+    now = [0.0]
+    frames = [_textured_frame(seq=i) for i in range(3)]
+    server = _FakeServer(frames)
+    fast = _FakeNude([Detection("FEMALE_BREAST_EXPOSED", 0.9, (10, 10, 20, 20))])
+    still = _FakeStill(raise_=True)
+    sess = _session(
+        server,
+        fast,
+        still_detector=still,
+        print_fn=lambda *a, **k: None,
+        time_fn=lambda: now[0],
+    )
+    assert sess.step(0.01) is True
+    now[0] = 0.1
+    assert sess.step(0.01) is True
+    now[0] = 1.0
+    assert sess.step(0.01) is True
+    assert still.calls == 1
+    assert server.sends[-1][4] == [(10, 10, 20, 20)]
+
+
+def test_step_still_tracker_exception_keeps_fast_detections():
+    now = [0.0]
+    meta, pixels, receipt = _raw_frame()
+    server = _FakeServer([(meta, pixels, receipt)])
+    fast = _FakeNude([Detection("FEMALE_BREAST_EXPOSED", 0.9, (10, 10, 20, 20))])
+    still = _FakeStill([Detection("FEMALE_BREAST_EXPOSED", 0.9, (30, 30, 10, 10))])
+    sess = _session(
+        server,
+        fast,
+        still_detector=still,
+        print_fn=lambda *a, **k: None,
+        time_fn=lambda: now[0],
+    )
+
+    class _BoomTracker:
+        def __init__(self):
+            self.reset_calls: list = []
+
+        def update(self, display_id, frame, now):
+            raise RuntimeError("tracker boom")
+
+        def reset(self, display_id):
+            self.reset_calls.append(display_id)
+
+    boom = _BoomTracker()
+    sess._still_tracker = boom
+    assert sess.step(0.01) is True
+    assert server.sends[0][4] == [(10, 10, 20, 20)]
+    assert boom.reset_calls == [1]
+    assert still.calls == 0
+
+
+def test_step_without_still_detector_uses_no_motion_estimation(monkeypatch):
+    import cv2
+
+    import bsafe.live as live_mod
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("phaseCorrelate must not be called")
+
+    def _boom_tracker(*args, **kwargs):
+        raise AssertionError("StillnessTracker must not be constructed")
+
+    monkeypatch.setattr(cv2, "phaseCorrelate", _boom)
+    monkeypatch.setattr(live_mod, "StillnessTracker", _boom_tracker)
+    meta, pixels, receipt = _raw_frame()
+    server = _FakeServer([(meta, pixels, receipt)])
+    sess = _session(
+        server,
+        _FakeNude([Detection("FEMALE_BREAST_EXPOSED", 0.9, (10, 10, 20, 20))]),
+        print_fn=lambda *a, **k: None,
+    )
+    assert sess.step(0.01) is True
+    assert server.sends[0][4] == [(10, 10, 20, 20)]
+
+
+def test_handle_display_info_prepares_still_detector():
+    server = _FakeServer([])
+    det = _FakeNude()
+    still = _FakeStill()
+    sess = _session(
+        server,
+        det,
+        still_detector=still,
+        print_fn=lambda *a, **k: None,
+        extra_factors=(0.5,),
+        time_fn=time.monotonic,
+    )
+    sess.handle_display_info(_display(1, 200, 100, 200, 100))
+    assert still.prepare_calls == [(200, 100)]
+    assert det.prepare_calls[0] == (200, 100)
+    assert server.requests == [1]
+
+
+def test_handle_display_info_resets_stillness():
+    now = [10.0]
+    server = _FakeServer([_textured_frame(seq=i) for i in range(3)])
+    still = _FakeStill([Detection("FEMALE_BREAST_EXPOSED", 0.9, (10, 10, 20, 20))])
+    sess = _session(
+        server,
+        _FakeNude([]),
+        still_detector=still,
+        still_after_s=0.5,
+        print_fn=lambda *a, **k: None,
+        time_fn=lambda: now[0],
+    )
+    assert sess.step(0.01) is True
+    now[0] = 10.1
+    assert sess.step(0.01) is True
+    assert still.calls == 0
+    sess.handle_display_info(_display(1, 64, 48, 64, 48))
+    now[0] = 11.0
+    assert sess.step(0.01) is True
+    assert still.calls == 0

@@ -26,7 +26,18 @@ _COMMON_KEYS = {
 }
 
 VALID_KEYS = {
-    "start": {"fps", "dry_run", "display", "stats", "detect_scale", "min_padding", "extra_scales"}
+    "start": {
+        "fps",
+        "dry_run",
+        "display",
+        "stats",
+        "detect_scale",
+        "min_padding",
+        "extra_scales",
+        "still_model",
+        "still_period",
+        "still_after",
+    }
     | _COMMON_KEYS,
     "video": {"fps", "chunk_frames", "enhance"} | _COMMON_KEYS,
     "image": _COMMON_KEYS.copy(),
@@ -71,6 +82,9 @@ dry_run = false
 # stats = false      # log live detection timing every ~2s plus native capture/tracking stats
 # detect_scale = 1.0  # detection resolution multiple: 1.0, 1.25, 1.5, 2.0 (NudeNet only; 1.5 catches ~100 pt images)
 # extra_scales = "0.5"   # comma list of extra detection scales; "none" disables
+# still_model = "none"  # "640m" adds a 640m pass every still_period s once the screen is still for still_after s
+# still_period = 2.0
+# still_after = 0.5
 
 [video]
 # fps =              # unset = use native video FPS

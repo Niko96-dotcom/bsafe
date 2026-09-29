@@ -230,7 +230,8 @@ def compute_motion(video_path: str | Path, out_path: str | Path, downscale: int 
                 prev = curr
             else:
                 try:
-                    shift, response = cv2.phaseCorrelate(prev, curr, window)
+                    # phaseCorrelate can modify inputs in place; keep curr intact.
+                    shift, response = cv2.phaseCorrelate(prev, curr.copy(), window)
                 except Exception as e:
                     raise RuntimeError(f"phaseCorrelate failed on frame {n}: {e}") from e
                 shifts.append(

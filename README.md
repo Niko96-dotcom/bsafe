@@ -89,7 +89,9 @@ Standard (`--extra-scales 0.5`), Strict (`--extra-scales 0.5,0.25`). The
 extra 0.25x pass catches very large close-ups: over five simulated X sessions
 it leaked about as little as `--detect-scale 1.5 --extra-scales 1.0,0.5`
 (5.0% vs 5.2%) and missed fewer objects (10.5% vs 12.7%) at about half the
-detection cost (~23 ms vs ~47 ms per frame).
+detection cost (~23 ms vs ~47 ms per frame). When the 640m model is
+downloaded (`~/.config/bsafe/models/640m.onnx`), Standard and Strict also add
+`--still-model 640m`.
 
 If `bsafe start` exits unexpectedly while switched on, the app relaunches it
 (2/5/10/30 s backoff) and gives up after 5 failures within 5 minutes.
@@ -176,6 +178,7 @@ Shared flags (work with both `start` and `video`):
 - `--stats` — log live detection timing every ~2s plus native capture/tracking stats
 - `--detect-scale N` — detection resolution as a multiple of the display's point size (default 1.0). 1.5 detects images down to ~100 pt wide at ~2x GPU cost
 - `--min-padding N` — minimum padding in capture pixels per side, added to small boxes (default: 0). Units are the capture size printed at startup (`Display 1: capturing 1728x1117 px`). Small detections carry most of the leaked area and proportional `--padding` barely grows them: on scrolling X feed recordings at live capture size, a 24 px floor cut leak by up to 20% for about +0.15% of screen over-censor
+- `--still-model {none,640m}` — on still screens (no scrolling for `--still-after` seconds, default 0.5), run the 640m model on the frame every `--still-period` seconds (default 2.0) and add its detections (default: `none`; needs the 640m download). The 320n model tends to lose objects on paused feeds and playing videos that 640m still sees, and the 3 s box persistence carries each 640m hit to the next one. Over five simulated 3-min X sessions it cut mean leak from 5.6% to 4.4% (Standard) and 5.0% to 3.9% (Strict) with no extra over-censoring, for one ~80 ms pass every 2 s while still plus ~1.4 ms per frame of motion estimation. NudeNet-only
 - `--extra-scales LIST` — extra detection passes at these multiples of point size, e.g. `0.5` or `0.5,0.75` (each must be < `--detect-scale`; default `0.5` for NudeNet, `none` to disable). The 320n model was trained at 320 px input and misses large close-ups full-frame at native 1728 px: one extra 0.5x pass cut leak vs a 640m oracle from 18.9% to 10.3% (feet), 50.7% to 32.5% (armpits), 17.5% to 16.5% (butt) for ~+5 ms per frame. Strict mode: `bsafe start --extra-scales 0.5,0.25` adds a pass for very large close-ups (~1.3x Standard's cost). `--detect-scale 1.5 --extra-scales 1.0,0.5` helps tiny objects (feet, small thumbnails) but costs ~2x Strict for the same overall leak; keep a native-size 1.0 pass with 1.5x, or mid-size objects such as armpit close-ups are missed. NudeNet-only (warned and ignored with EraX)
 
 ### How live mode works

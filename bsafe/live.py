@@ -24,6 +24,8 @@ _ERROR_LOG_INTERVAL_S = 5.0
 AUTO_EXTRA_SCALES: tuple[float, ...] = (0.5,)
 MAX_EXTRA_SCALES = 3
 
+STILL_SHIFT_PX = 0.5
+
 
 def parse_extra_scales(raw) -> tuple[float, ...] | None:
     """Parse an --extra-scales value. Returns None for auto (raw is None).
@@ -190,6 +192,53 @@ def bgra_view(meta, pixels) -> np.ndarray:
     return np.frombuffer(pixels, dtype=np.uint8).reshape(meta.height, meta.width, 4)
 
 
+class StillnessTracker:
+    """Per-display stillness from phase-correlation shift (metadata only).
+
+    Downscales each BGRA frame to 1/4 size grayscale and measures the shift
+    against the previous frame with cv2.phaseCorrelate. A frame is still when
+    the full-resolution shift magnitude is below STILL_SHIFT_PX.
+    """
+
+    def __init__(self):
+        self._state: dict = {}
+
+    def reset(self, display_id) -> None:
+        """Drop stillness state for one display (e.g. on display info)."""
+        self._state.pop(display_id, None)
+
+    def update(self, display_id, frame_bgra, now) -> float | None:
+        """Record a frame; return seconds still, or None when not still."""
+        import math
+
+        import cv2
+
+        gray = cv2.cvtColor(frame_bgra, cv2.COLOR_BGRA2GRAY)
+        curr = cv2.resize(gray, None, fx=1 / 4, fy=1 / 4, interpolation=cv2.INTER_AREA).astype(
+            np.float32
+        )
+        h, w = curr.shape
+        entry = self._state.get(display_id)
+        if entry is None or entry["prev"].shape != curr.shape:
+            self._state[display_id] = {
+                "prev": curr,
+                "window": cv2.createHanningWindow((w, h), cv2.CV_32F),
+                "still_since": None,
+            }
+            return None
+        # phaseCorrelate can modify its inputs in place (seen with small frames),
+        # so correlate against a copy and keep the pristine curr as prev.
+        (dx, dy), _ = cv2.phaseCorrelate(entry["prev"], curr.copy(), entry["window"])
+        magnitude = math.hypot(dx, dy) * 4
+        entry["prev"] = curr
+        if magnitude < STILL_SHIFT_PX:
+            if entry["still_since"] is None:
+                entry["still_since"] = now
+            return now - entry["still_since"]
+        entry["still_since"] = None
+        return None
+
+
 class LiveSession:
     """Testable heart of cmd_start: credits, detection, seq-tagged boxes."""
 
@@ -207,6 +256,9 @@ class LiveSession:
         time_fn=time.monotonic,
         min_padding: int = 0,
         extra_factors: tuple[float, ...] = (),
+        still_detector=None,
+        still_period_s: float = 2.0,
+        still_after_s: float = 0.5,
     ):
         self._server = server
         self._detector = detector
@@ -220,6 +272,11 @@ class LiveSession:
         self._time_fn = time_fn
         self._last_exc_log = float("-inf")
         self._extra_factors = tuple(extra_factors)
+        self._still_detector = still_detector
+        self._still_period_s = still_period_s
+        self._still_after_s = still_after_s
+        self._still_tracker = StillnessTracker() if still_detector is not None else None
+        self._last_still_run: dict = {}
 
     def _emit(self, text: str) -> None:
         try:
@@ -242,6 +299,8 @@ class LiveSession:
                 from bsafe.fastdetect import prepare_multiscale
 
                 prepare_multiscale(self._detector, cw, ch, self._extra_factors)
+                if self._still_detector is not None and hasattr(self._still_detector, "prepare"):
+                    self._still_detector.prepare(cw, ch)
                 elapsed_ms = (self._time_fn() - t0) * 1000.0
                 provider = getattr(self._detector, "provider", "cpu")
                 self._emit(
@@ -253,6 +312,8 @@ class LiveSession:
                 if now - self._last_exc_log >= _ERROR_LOG_INTERVAL_S:
                     logger.exception("Live detector prepare failed")
                     self._last_exc_log = now
+        if self._still_tracker is not None:
+            self._still_tracker.reset(did)
         self._server.request_frame(did)
 
     def drain_display_events(self) -> int:
@@ -288,6 +349,31 @@ class LiveSession:
 
                 bgr = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
                 detections = self._detector.detect_frame(bgr)
+            if (
+                self._still_detector is not None
+                and self._is_nudenet
+                and self._still_tracker is not None
+            ):
+                now = self._time_fn()
+                attempted_still = False
+                try:
+                    seconds_still = self._still_tracker.update(meta.display_id, frame, now)
+                    if seconds_still is not None and seconds_still >= self._still_after_s:
+                        last_run = self._last_still_run.get(meta.display_id)
+                        if last_run is None or now - last_run >= self._still_period_s:
+                            attempted_still = True
+                            still_dets = self._still_detector.detect_bgra(frame)
+                            if still_dets:
+                                detections = list(detections) + list(still_dets)
+                            self._last_still_run[meta.display_id] = now
+                except Exception:
+                    now_exc = self._time_fn()
+                    if now_exc - self._last_exc_log >= _ERROR_LOG_INTERVAL_S:
+                        logger.exception("Live still detection failed")
+                        self._last_exc_log = now_exc
+                    if not attempted_still:
+                        self._still_tracker.reset(meta.display_id)
+                    self._last_still_run[meta.display_id] = now
             detect_s = self._time_fn() - detect_start
             logger.debug("Processed frame: %d detection(s)", len(detections))
             if detections:

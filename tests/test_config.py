@@ -26,6 +26,9 @@ def test_start_valid_keys():
             "detect_scale",
             "min_padding",
             "extra_scales",
+            "still_model",
+            "still_period",
+            "still_after",
         }
         | VALID_KEYS["common"]
     )
@@ -135,3 +138,33 @@ def test_extra_scales_config_float_list_string(tmp_path):
         start_parser.set_defaults(**start_config)
         args = parser.parse_args(["start"])
         assert parse_extra_scales(args.extra_scales) == expected
+
+
+def test_still_keys_are_start_only():
+    assert "still_model" in VALID_KEYS["start"]
+    assert "still_period" in VALID_KEYS["start"]
+    assert "still_after" in VALID_KEYS["start"]
+    for key in ("still_model", "still_period", "still_after"):
+        assert key not in VALID_KEYS["common"]
+        assert key not in VALID_KEYS["video"]
+        assert key not in VALID_KEYS["image"]
+        assert key in generate_default_config()
+
+
+def test_still_config_applies_as_start_default(tmp_path):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(
+        '[start]\nstill_model = "640m"\nstill_period = 3.0\nstill_after = 1.0\n',
+        encoding="utf-8",
+    )
+    config = load_config(str(cfg))
+    assert config["start"]["still_model"] == "640m"
+    assert config["start"]["still_period"] == 3.0
+    assert config["start"]["still_after"] == 1.0
+    parser, start_parser, _, _ = _build_parser()
+    start_config = {**config.get("common", {}), **config.get("start", {})}
+    start_parser.set_defaults(**start_config)
+    args = parser.parse_args(["start"])
+    assert args.still_model == "640m"
+    assert args.still_period == 3.0
+    assert args.still_after == 1.0

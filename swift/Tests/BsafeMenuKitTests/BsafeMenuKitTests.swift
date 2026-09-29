@@ -46,6 +46,16 @@ final class BsafeMenuKitTests: XCTestCase {
         XCTAssertEqual(Array(strict.dropFirst(strict.firstIndex(of: "--detect-scale")! + 1).prefix(1)), ["1.0"])
     }
 
+    func testStillModelArguments() {
+        var s = BsafeSettings()
+        XCTAssertFalse(arguments(for: s).contains("--still-model"))
+        XCTAssertEqual(Array(arguments(for: s, stillModel: true).suffix(6).prefix(2)), ["--still-model", "640m"])
+        s.quality = .strict
+        XCTAssertTrue(arguments(for: s, stillModel: true).contains("--still-model"))
+        s.quality = .fast
+        XCTAssertFalse(arguments(for: s, stillModel: true).contains("--still-model"))
+    }
+
     func testFeetFlagAlwaysExplicit() {
         var s = BsafeSettings()
         s.feet = false

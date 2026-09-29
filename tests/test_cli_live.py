@@ -518,3 +518,189 @@ def test_cmd_start_no_watchdog_when_parent_is_init(monkeypatch):
         session_cls.return_value = session
         ret = cmd_start(args)
     assert ret == 0
+
+
+def test_parser_still_defaults():
+    args = _args([])
+    assert args.still_model is None
+    assert args.still_period is None
+    assert args.still_after is None
+
+
+def test_parser_still_values():
+    args = _args(["--still-model", "640m", "--still-period", "3", "--still-after", "1"])
+    assert args.still_model == "640m"
+    assert args.still_period == 3.0
+    assert args.still_after == 1.0
+
+
+def test_still_model_choices_rejected():
+    with pytest.raises(SystemExit):
+        _args(["--still-model", "320n"])
+
+
+def test_still_period_invalid_rejected():
+    for value in ("0", "-1"):
+        with pytest.raises(SystemExit):
+            _validate_live_args(_args(["--still-period", value]))
+
+
+def test_still_after_negative_rejected():
+    with pytest.raises(SystemExit):
+        _validate_live_args(_args(["--still-after", "-0.5"]))
+
+
+def test_still_after_zero_ok_and_defaults_filled():
+    args = _args(["--still-after", "0"])
+    _validate_live_args(args)
+    assert args.still_after == 0
+    assert args.still_period == 2.0
+
+
+def test_print_config_still(capsys):
+    args = _args([])
+    args.confidence = 0.0
+    _print_config(args)
+    assert "still_model=none" in capsys.readouterr().out
+    enabled = _args(["--still-model", "640m", "--still-period", "3", "--still-after", "1"])
+    enabled.confidence = 0.0
+    _print_config(enabled)
+    out = capsys.readouterr().out
+    assert "still_model=640m" in out
+    assert "still_period=3.0" in out
+    assert "still_after=1.0" in out
+    erax = _args(["--model", "erax-nano", "--still-model", "640m"])
+    erax.confidence = 0.2
+    _print_config(erax)
+    assert "still_model=none" in capsys.readouterr().out
+
+
+def test_cmd_start_builds_and_closes_still_detector():
+    args = _args(["--still-model", "640m", "--still-period", "3", "--still-after", "1"])
+    with (
+        patch("bsafe.detector.resolve_model") as resolve_mock,
+        patch("bsafe.ipc.FrameServer") as server_cls,
+        patch("bsafe.swift_helper.spawn_helper") as helper_mock,
+        patch("bsafe.fastdetect.FullFrameNudeDetector") as det_cls,
+        patch("bsafe.live.LiveSession") as session_cls,
+    ):
+        resolve_mock.return_value = MagicMock(path="/tmp/640m.onnx")
+        server_cls.return_value = MagicMock()
+        helper = MagicMock()
+        helper.poll.side_effect = [None, 0]
+        helper.stderr = None
+        helper_mock.return_value = helper
+        detector = MagicMock()
+        det_cls.return_value = detector
+        session = MagicMock()
+        session_cls.return_value = session
+        session.step.side_effect = KeyboardInterrupt
+        cmd_start(args)
+        assert det_cls.call_count == 2
+        _, kwargs = session_cls.call_args
+        assert kwargs["still_detector"] is detector
+        assert kwargs["still_period_s"] == 3.0
+        assert kwargs["still_after_s"] == 1.0
+        assert detector.close.call_count == 2
+
+
+def test_cmd_start_no_still_by_default():
+    args = _args([])
+    with (
+        patch("bsafe.ipc.FrameServer") as server_cls,
+        patch("bsafe.swift_helper.spawn_helper") as helper_mock,
+        patch("bsafe.fastdetect.FullFrameNudeDetector") as det_cls,
+        patch("bsafe.live.LiveSession") as session_cls,
+    ):
+        server_cls.return_value = MagicMock()
+        helper = MagicMock()
+        helper.poll.side_effect = [None, 0]
+        helper.stderr = None
+        helper_mock.return_value = helper
+        det_cls.return_value = MagicMock()
+        session = MagicMock()
+        session_cls.return_value = session
+        session.step.side_effect = KeyboardInterrupt
+        cmd_start(args)
+        assert det_cls.call_count == 1
+        _, kwargs = session_cls.call_args
+        assert kwargs["still_detector"] is None
+        assert kwargs["still_period_s"] == 2.0
+        assert kwargs["still_after_s"] == 0.5
+
+
+def test_cmd_start_erax_still_warns_and_disabled(capsys):
+    args = _args(["--model", "erax-nano", "--still-model", "640m"])
+    with (
+        patch("bsafe.ipc.FrameServer") as server_cls,
+        patch("bsafe.swift_helper.spawn_helper") as helper_mock,
+        patch("bsafe.detector.Detector") as det_cls,
+        patch("bsafe.fastdetect.FullFrameNudeDetector") as nude_cls,
+        patch("bsafe.live.LiveSession") as session_cls,
+    ):
+        server_cls.return_value = MagicMock()
+        helper = MagicMock()
+        helper.poll.side_effect = [None, 0]
+        helper.stderr = None
+        helper_mock.return_value = helper
+        det_cls.return_value = MagicMock()
+        session = MagicMock()
+        session_cls.return_value = session
+        session.step.side_effect = KeyboardInterrupt
+        cmd_start(args)
+    err = capsys.readouterr().err
+    assert "--still-model has no effect with EraX models (NudeNet-only)" in err
+    nude_cls.assert_not_called()
+    _, kwargs = session_cls.call_args
+    assert kwargs["still_detector"] is None
+
+
+def test_cmd_start_missing_still_model_exits_cleanly(capsys):
+    args = _args(["--still-model", "640m"])
+
+    def _fake_resolve(name):
+        if name == "640m":
+            raise ValueError("model file not found: 640m")
+        return MagicMock(path="/tmp/320n.onnx")
+
+    with (
+        patch("bsafe.detector.resolve_model", side_effect=_fake_resolve),
+        patch("bsafe.ipc.FrameServer") as server_cls,
+        patch("bsafe.swift_helper.spawn_helper") as helper_mock,
+        patch("bsafe.fastdetect.FullFrameNudeDetector"),
+        patch("bsafe.live.LiveSession"),
+    ):
+        with pytest.raises(SystemExit) as exc:
+            cmd_start(args)
+        assert exc.value.code == 1
+    assert "Error:" in capsys.readouterr().err
+    helper_mock.assert_not_called()
+    server_cls.assert_not_called()
+
+
+def test_still_period_nonfinite_rejected():
+    for value in ("nan", "inf", "-inf"):
+        with pytest.raises(SystemExit):
+            _validate_live_args(_args(["--still-period", value]))
+
+
+def test_still_after_nonfinite_rejected():
+    for value in ("nan", "inf", "-inf"):
+        with pytest.raises(SystemExit):
+            _validate_live_args(_args(["--still-after", value]))
+
+
+def test_still_model_config_640M_rejected(capsys):
+    args = _args([])
+    args.still_model = "640M"
+    with pytest.raises(SystemExit):
+        _validate_live_args(args)
+    assert "invalid still_model" in capsys.readouterr().err
+
+
+def test_still_model_config_true_rejected(capsys):
+    args = _args([])
+    args.still_model = True
+    with pytest.raises(SystemExit):
+        _validate_live_args(args)
+    assert "invalid still_model" in capsys.readouterr().err

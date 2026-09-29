@@ -77,9 +77,18 @@ public func formatPadding(_ value: Double) -> String {
     return s
 }
 
+/// Path of the optional 640m model used by the still-screen pass.
+public let stillModelPath = NSString(string: "~/.config/bsafe/models/640m.onnx").expandingTildeInPath
+
+/// Whether the 640m model is downloaded (the still pass needs it).
+public func stillModelInstalled() -> Bool {
+    FileManager.default.fileExists(atPath: stillModelPath)
+}
+
 /// Build the `bsafe start ...` argument list for the given settings.
 /// Always starts with ["start", "--stats"]; the feet flag is always explicit.
-public func arguments(for settings: BsafeSettings) -> [String] {
+/// With `stillModel`, Standard and Strict add a 640m pass on still screens.
+public func arguments(for settings: BsafeSettings, stillModel: Bool = false) -> [String] {
     var args = ["start", "--stats"]
     args += ["--censor", settings.censor.rawValue]
     args.append(settings.feet ? "--feet" : "--no-feet")
@@ -93,6 +102,9 @@ public func arguments(for settings: BsafeSettings) -> [String] {
         args += ["--extra-scales", "0.5", "--detect-scale", "1.0"]
     case .strict:
         args += ["--extra-scales", "0.5,0.25", "--detect-scale", "1.0"]
+    }
+    if stillModel && settings.quality != .fast {
+        args += ["--still-model", "640m"]
     }
     switch settings.style {
     case .pixelate:

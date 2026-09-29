@@ -130,7 +130,7 @@ final class BsafeController: ObservableObject {
         runState = .starting
         process.start(
             executable: exe,
-            arguments: arguments(for: settings),
+            arguments: arguments(for: settings, stillModel: stillModelInstalled()),
             cwd: cwd,
             env: ["NO_COLOR": "1"]
         )

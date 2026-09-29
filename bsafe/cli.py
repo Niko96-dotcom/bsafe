@@ -2,6 +2,7 @@ import argparse
 import faulthandler
 import gc
 import logging
+import math
 import multiprocessing
 import os
 import signal
@@ -229,6 +230,43 @@ def _validate_live_args(args):
     except ValueError as e:
         print(f"{error('Error:')} {e}", file=sys.stderr)
         sys.exit(1)
+    still_model = getattr(args, "still_model", None)
+    if still_model not in (None, "none", "640m"):
+        print(
+            f'{error("Error:")} invalid still_model {still_model!r}: expected "none" or "640m"',
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    period = getattr(args, "still_period", None)
+    if period is None:
+        period = 2.0
+        args.still_period = period
+    if not (math.isfinite(period) and period > 0):
+        print(f"{error('Error:')} --still-period must be a finite number > 0", file=sys.stderr)
+        sys.exit(1)
+    after = getattr(args, "still_after", None)
+    if after is None:
+        after = 0.5
+        args.still_after = after
+    if not (math.isfinite(after) and after >= 0):
+        print(f"{error('Error:')} --still-after must be a finite number >= 0", file=sys.stderr)
+        sys.exit(1)
+
+
+def _still_model_display(args) -> str:
+    """Format the --still-model value for the Config line (None means disabled)."""
+    from bsafe.detector import get_model_backend
+
+    raw = getattr(args, "still_model", None)
+    if raw != "640m":
+        return "none"
+    try:
+        backend = get_model_backend(getattr(args, "model", None))
+    except ValueError:
+        backend = "nudenet"
+    if backend == "erax":
+        return "none"
+    return str(raw)
 
 
 def _print_config(args):
@@ -270,6 +308,14 @@ def _print_config(args):
         parts.append(f"detect_scale={args.detect_scale}")
     if hasattr(args, "extra_scales"):
         parts.append(f"extra_scales={_extra_scales_display(args)}")
+    if hasattr(args, "still_model"):
+        still_disp = _still_model_display(args)
+        parts.append(f"still_model={still_disp}")
+        if still_disp != "none":
+            period = getattr(args, "still_period", None)
+            after = getattr(args, "still_after", None)
+            parts.append(f"still_period={2.0 if period is None else period}")
+            parts.append(f"still_after={0.5 if after is None else after}")
     if getattr(args, "stats", False):
         parts.append("stats=true")
     print(f"{dim('Config:')} {', '.join(parts)}", flush=True)
@@ -338,22 +384,38 @@ def cmd_start(args):
             f"{warn('Warning:')} --extra-scales has no effect with EraX models (NudeNet-only)",
             file=sys.stderr,
         )
+    if _is_erax_model and getattr(args, "still_model", None) == "640m":
+        print(
+            f"{warn('Warning:')} --still-model has no effect with EraX models (NudeNet-only)",
+            file=sys.stderr,
+        )
 
     _print_config(args)
 
     # Initialize detector: NudeNet uses the full-frame GPU path, EraX the classic one.
     print(f"Loading model {bold(args.model or '320n')}...", flush=True)
-    backend = get_model_backend(args.model)
-    is_nudenet = backend != "erax"
-    if is_nudenet:
-        from bsafe.fastdetect import FullFrameNudeDetector
+    try:
+        backend = get_model_backend(args.model)
+        is_nudenet = backend != "erax"
+        if is_nudenet:
+            from bsafe.fastdetect import FullFrameNudeDetector
 
-        detector = FullFrameNudeDetector(
-            model_path=resolve_model(args.model).path,
-            min_confidence=args.confidence,
-        )
-    else:
-        detector = Detector(min_confidence=args.confidence, model=args.model)
+            detector = FullFrameNudeDetector(
+                model_path=resolve_model(args.model).path,
+                min_confidence=args.confidence,
+            )
+            still_detector = None
+            if getattr(args, "still_model", None) == "640m":
+                still_detector = FullFrameNudeDetector(
+                    model_path=resolve_model("640m").path,
+                    min_confidence=args.confidence,
+                )
+        else:
+            detector = Detector(min_confidence=args.confidence, model=args.model)
+            still_detector = None
+    except ValueError as e:
+        print(f"{error('Error:')} {e}", file=sys.stderr)
+        sys.exit(1)
 
     # Resolve user-input-derived values before spawning the helper so nothing
     # that can raise on user input runs between spawn_helper and try/finally.
@@ -384,6 +446,13 @@ def cmd_start(args):
 
     print(bold("Running...") + " press Ctrl+C to stop.", flush=True)
 
+    still_period = getattr(args, "still_period", None)
+    if still_period is None:
+        still_period = 2.0
+    still_after = getattr(args, "still_after", None)
+    if still_after is None:
+        still_after = 0.5
+
     session = LiveSession(
         server,
         detector,
@@ -394,6 +463,9 @@ def cmd_start(args):
         stats=stats,
         min_padding=min_padding_int,
         extra_factors=extra_factors,
+        still_detector=still_detector,
+        still_period_s=float(still_period),
+        still_after_s=float(still_after),
     )
     # Watchdog: if our parent dies we are reparented to init (ppid 1).
     # Record the parent at start; only act when we started with a real
@@ -456,6 +528,8 @@ def cmd_start(args):
             pass
         server.shutdown()
         detector.close()
+        if still_detector is not None:
+            still_detector.close()
         if show_stats and stats is not None:
             print(dim(stats.summary()), flush=True)
         if helper.poll() is None:
@@ -999,6 +1073,24 @@ def _build_parser():
         default=None,
         help="Extra detection passes at these multiples of point size (comma list, each < --detect-scale; "
         "default 0.5 for NudeNet, 'none' to disable). Catches large close-ups the full-res pass misses",
+    )
+    start_parser.add_argument(
+        "--still-model",
+        choices=["none", "640m"],
+        default=None,
+        help="extra 640m pass on still screens (requires 640m download)",
+    )
+    start_parser.add_argument(
+        "--still-period",
+        type=float,
+        default=None,
+        help="Seconds between still-screen 640m passes once still (default: 2.0)",
+    )
+    start_parser.add_argument(
+        "--still-after",
+        type=float,
+        default=None,
+        help="Seconds the screen must be still before the 640m pass runs (default: 0.5)",
     )
 
     # video subcommand
